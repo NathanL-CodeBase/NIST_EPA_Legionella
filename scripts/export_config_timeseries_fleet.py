@@ -27,6 +27,17 @@ generates:
      backward as-of merge (most recent reading within 2 minutes; blank
      otherwise).
 
+C_room pass (--c-room):
+  A separate pseudo-sensor pass exports the canonical position-weighted fleet
+  average (C_room) from scripts/moduair_cave_ratio.py, restricted to minutes
+  where more than MIN_QUANTS fleet sensors report. C_room is loaded 10-min
+  smoothed (matching moduair_cave_ratio.py) and only exists on the shared
+  1-minute grid, so its "raw" workbooks are minute-indexed per-event sheets
+  rather than native-cadence records. Output lands under C_room/ with the same
+  aggregated-plus-raw structure as a sensor. The C_room pass uses the full
+  window event set (no per-sensor install gating): a not-yet-installed sensor
+  is simply absent from the fleet count at those minutes.
+
 Sensor set:
   All fleet sensors in the chunk share except MOD-PM-00467 and MOD-PM-00785:
   195, 401, 402, 465, 515, 516, 554, 555, 813, 814, 815, 816, 942, 943.
@@ -47,13 +58,20 @@ Output:
   <data_root>/output/event_config_timeseries_fleet/
     MOD-PM-<sn>/MOD-PM-<sn>_event_config_timeseries.xlsx
     MOD-PM-<sn>/raw/<config_group>_raw.xlsx
+    C_room/C_room_event_config_timeseries.xlsx
+    C_room/raw/<config_group>_raw.xlsx
 
 Usage:
   python scripts/export_config_timeseries_fleet.py [--no-sig-figs] [--sensors 195 401 ...]
+  python scripts/export_config_timeseries_fleet.py --c-room
 
 Author: Nathan Lima
 Institution: National Institute of Standards and Technology (NIST)
 Created: 2026-07-23
+Update log:
+    2026-09-08 (Nathan Lima): Add --c-room pass exporting the canonical
+        position-weighted fleet average (C_room) as aggregated and raw
+        workbooks under C_room/, reusing moduair_cave_ratio.compute_room_frame.
 """
 
 import argparse
@@ -80,11 +98,23 @@ from scripts.export_config_timeseries import (  # noqa: E402
     preload_sensor_data,
     write_excel,
 )
+from scripts.moduair_cave_ratio import (  # noqa: E402
+    FLEET_SNS,
+    MIN_QUANTS,
+    POSITION_GROUPS,
+    POSITION_WEIGHTS,
+    TARGET_SN,
+    build_position_totals,
+    compute_room_frame,
+)
 from src.data_paths import get_data_root  # noqa: E402
 from src.event_manager import sort_config_keys_by_water_temp  # noqa: E402
-from src.moduair_loader import (  # noqa: E402
+from src.moduair_loader import (  # noqa: E402  # noqa: E402
     BIN_COLUMNS,
+    N_BINS,
     _normalize_sn,
+    list_available_sensors,
+    load_fleet_bins,
     load_sensor_bins,
     load_sensor_bins_raw,
 )
@@ -209,6 +239,69 @@ def filter_events_for_sensor(valid: pd.DataFrame, sn: str) -> pd.DataFrame:
     if cutoff is None:
         return valid
     return valid[valid["shower_on"] >= cutoff].copy()
+
+
+# =============================================================================
+# C_room Assembly (position-weighted fleet average pseudo-sensor)
+# =============================================================================
+
+
+def build_c_room_1min_frame() -> pd.DataFrame:
+    """
+    Build the canonical position-weighted C_room as a 1-minute bin frame.
+
+    Loads the fleet (10-min smoothed, matching moduair_cave_ratio.py), computes
+    per-bin C_room via compute_room_frame, and keeps only minutes where more than
+    MIN_QUANTS fleet sensors report a valid reading. The result is shaped like a
+    single sensor's 1-min frame (datetime + opc_bin0..11) so it can be fed to
+    build_event_pm_1min unchanged.
+
+    Returns:
+        DataFrame with a 'datetime' column and opc_bin0..opc_bin11, on the shared
+        1-minute grid, restricted to >MIN_QUANTS-sensor minutes. Empty if the
+        fleet has no data in the window.
+    """
+    available = set(list_available_sensors("raw"))
+    wanted = [sn for sn in (FLEET_SNS + [TARGET_SN]) if sn in available]
+    missing = [sn for sn in (FLEET_SNS + [TARGET_SN]) if sn not in available]
+    if missing:
+        print(f"  Sensors with no chunks (skipped): {', '.join(sorted(set(missing)))}")
+
+    print(f"  Loading fleet ({DATE_START.date()} to {DATE_END.date()}, 10-min smoothed)...")
+    fleet = load_fleet_bins(wanted, start=DATE_START, end=DATE_END)
+    if not fleet:
+        print("  No fleet data loaded; C_room frame is empty.")
+        return pd.DataFrame(columns=["datetime"] + BIN_COLUMNS)
+
+    totals = build_position_totals(fleet)
+
+    # Assemble each bin's filtered C_room into a single wide frame.
+    bin_series = {}
+    for i in range(N_BINS):
+        bin_col = f"opc_bin{i}"
+        cave = compute_room_frame(totals, bin_col)
+        if cave.empty:
+            continue
+        kept = cave.loc[cave["n_sensors"] > MIN_QUANTS, "C_room"]
+        if not kept.empty:
+            bin_series[bin_col] = kept
+
+    if not bin_series:
+        print("  C_room has no >8-sensor minutes in the window.")
+        return pd.DataFrame(columns=["datetime"] + BIN_COLUMNS)
+
+    frame = pd.DataFrame(bin_series).sort_index()
+    frame.index.name = "datetime"
+    frame = frame.reset_index()
+
+    # Guarantee all 12 bin columns exist (bins with no kept minutes -> NaN).
+    for col in BIN_COLUMNS:
+        if col not in frame.columns:
+            frame[col] = pd.NA
+
+    n_min = len(frame)
+    print(f"  C_room 1-min frame: {n_min:,} rows over >{MIN_QUANTS}-sensor minutes")
+    return frame[["datetime"] + BIN_COLUMNS]
 
 
 # =============================================================================
@@ -365,9 +458,7 @@ def attach_env_columns(
         if space_avg.empty:
             continue
 
-        env_frame = pd.DataFrame(
-            {"datetime": space_avg.index, group_name: space_avg.values}
-        )
+        env_frame = pd.DataFrame({"datetime": space_avg.index, group_name: space_avg.values})
         merged = pd.merge_asof(
             times,
             env_frame,
@@ -378,7 +469,6 @@ def attach_env_columns(
         out[group_name] = merged[group_name].values
 
     return out
-
 
 
 # =============================================================================
@@ -500,6 +590,137 @@ def write_raw_group_workbook(
                 for k in present_env
             ]
             ws.append([dt_str] + bin_vals + env_vals)
+
+        ws.column_dimensions["A"].width = 22
+        for col_idx in range(2, len(col_headers) + 1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = 18
+        ws.freeze_panes = ws.cell(row=5, column=2)
+        ws.row_dimensions[4].height = 40
+
+    wb.save(output_path)
+
+
+def write_c_room_raw_workbook(
+    output_path: Path,
+    group_key: str,
+    event_sheets: list,
+) -> None:
+    """
+    Write one C_room raw workbook (per-event 1-minute C_room) for a config group.
+
+    Unlike write_raw_group_workbook, C_room only exists on the shared 1-minute
+    grid, so each event sheet is minute-indexed (0 = shower-on, negatives are the
+    pre-shower lead-in) rather than native-cadence datetime records. Shared 1-min
+    env columns are written after the bins.
+
+    Sheet 1  : Index listing every event with its minute span and row count.
+    Sheet 2+ : One sheet per event with minute-indexed C_room bins plus env.
+
+    Parameters:
+        output_path: Destination .xlsx path.
+        group_key: Configuration group key (for the header/title).
+        event_sheets: List of (event_number, shower_on, deposition_end, pm_df),
+            where pm_df is the minute-indexed build_event_pm_1min output
+            (env columns plus bin0..bin11).
+    """
+    try:
+        import openpyxl
+        from openpyxl.styles import Alignment, Font
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        raise ImportError(
+            "openpyxl is required. Install with: conda install -c conda-forge openpyxl"
+        )
+
+    wb = openpyxl.Workbook()
+    header_font = Font(bold=True)
+    link_font = Font(color="0563C1", underline="single")
+
+    bin_labels = {
+        f"bin{n}": f"Bin{n} [{PARTICLE_BINS[n]['name']} um] (#/cm3)" for n in PARTICLE_BINS
+    }
+    env_label = {key: f"{display} ({unit})" for key, display, unit in ENV_COLUMN_SPECS}
+
+    # Env columns present in at least one event sheet, in canonical order.
+    present_env = [
+        key for key in ENV_RAW_ORDER if any(key in pm_df.columns for _, _, _, pm_df in event_sheets)
+    ]
+    # Bin columns present in at least one event sheet, in bin order.
+    present_bins = [
+        f"bin{n}"
+        for n in PARTICLE_BINS
+        if any(f"bin{n}" in pm_df.columns for _, _, _, pm_df in event_sheets)
+    ]
+
+    used_names: set = {"Index"}
+    sheet_names: dict = {}
+    for event_num, _, _, _ in event_sheets:
+        base = make_sheet_name(f"Event_{event_num}", used_names)
+        sheet_names[event_num] = base
+        used_names.add(base)
+
+    # --- Index sheet ---
+    ws_idx = wb.active
+    ws_idx.title = "Index"
+    ws_idx.append([f"Config Group: {group_key} (C_room, position-weighted fleet average)"])
+    ws_idx.cell(row=1, column=1).font = header_font
+    ws_idx.append([])
+    ws_idx.append(["#", "Event Number", "Sheet", "Shower On", "Window End", "N Minutes"])
+    for cell in ws_idx[3]:
+        cell.font = header_font
+
+    for i, (event_num, shower_on, window_end, pm_df) in enumerate(event_sheets, start=1):
+        sname = sheet_names[event_num]
+        ws_idx.append(
+            [
+                i,
+                event_num,
+                sname,
+                shower_on.strftime("%Y-%m-%d %H:%M:%S"),
+                window_end.strftime("%Y-%m-%d %H:%M:%S"),
+                len(pm_df),
+            ]
+        )
+        link_cell = ws_idx.cell(row=ws_idx.max_row, column=3)
+        link_cell.hyperlink = f"#'{sname}'!A1"
+        link_cell.font = link_font
+
+    ws_idx.column_dimensions["A"].width = 5
+    ws_idx.column_dimensions["B"].width = 14
+    ws_idx.column_dimensions["C"].width = 20
+    ws_idx.column_dimensions["D"].width = 22
+    ws_idx.column_dimensions["E"].width = 22
+    ws_idx.column_dimensions["F"].width = 12
+
+    # --- Data sheets (one per event) ---
+    for event_num, shower_on, window_end, pm_df in event_sheets:
+        sname = sheet_names[event_num]
+        ws = wb.create_sheet(title=sname)
+
+        ws.append([f"Config Group: {group_key}    Event: {event_num}    (C_room)"])
+        ws.cell(row=1, column=1).font = header_font
+        ws.append([f"Window: {shower_on:%Y-%m-%d %H:%M:%S} to {window_end:%Y-%m-%d %H:%M:%S}"])
+        ws.append([])
+
+        col_headers = (
+            ["Minutes from shower on"]
+            + [bin_labels[c] for c in present_bins]
+            + [env_label[k] for k in present_env]
+        )
+        ws.append(col_headers)
+        for cell in ws[4]:
+            cell.font = header_font
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+        for minute, row in pm_df.iterrows():
+            bin_vals = [
+                (row[c] if (c in pm_df.columns and pd.notna(row[c])) else None)
+                for c in present_bins
+            ]
+            env_vals = [
+                (row[k] if (k in pm_df.columns and pd.notna(row[k])) else None) for k in present_env
+            ]
+            ws.append([int(minute)] + bin_vals + env_vals)
 
         ws.column_dimensions["A"].width = 22
         for col_idx in range(2, len(col_headers) + 1):
@@ -633,13 +854,115 @@ def process_sensor(
         print(f"  No aggregated groups produced for {label}.")
 
 
+def process_c_room(
+    valid: pd.DataFrame,
+    sensor_cache: dict,
+    output_root: Path,
+    sig_figs_enabled: bool,
+) -> None:
+    """
+    Build and write the aggregated and raw workbooks for the C_room pseudo-sensor.
+
+    C_room is the canonical position-weighted fleet average from
+    moduair_cave_ratio.py, restricted to >MIN_QUANTS-sensor minutes. Unlike the
+    per-sensor pass there is no install-cutoff gating: a not-yet-installed sensor
+    simply is not counted at those minutes, so the full window event set is used.
+
+    Parameters:
+        valid: Window-filtered events from load_valid_events().
+        sensor_cache: Shared env sensor Series cache.
+        output_root: event_config_timeseries_fleet/ directory.
+        sig_figs_enabled: Apply sig-fig rounding to the aggregated workbook.
+    """
+    label = "C_room"
+    print(f"\n{'=' * 70}\n{label}\n{'=' * 70}")
+
+    if valid.empty:
+        print("  No events in window; skipping C_room.")
+        return
+
+    c_room_1min = build_c_room_1min_frame()
+    if c_room_1min.empty:
+        print("  C_room frame empty; skipping.")
+        return
+
+    group_keys = list(valid["_group_key"].unique())
+    try:
+        group_keys = sort_config_keys_by_water_temp(group_keys)
+    except Exception:
+        group_keys = sorted(group_keys)
+
+    sensor_dir = output_root / label
+    raw_dir = sensor_dir / "raw"
+    sensor_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    grouped = valid.groupby("_group_key")
+    agg_groups: dict = {}
+
+    used_sheet_names: set = {"Index"}
+    group_sheet_names: dict = {}
+    for key in group_keys:
+        group_sheet_names[key] = make_sheet_name(key, used_sheet_names)
+        used_sheet_names.add(group_sheet_names[key])
+
+    print(f"  Processing {len(group_keys)} configuration group(s)...")
+
+    for norm_key in group_keys:
+        group_rows = grouped.get_group(norm_key).to_dict("records")
+        event_nums = [int(e["event_number"]) for e in group_rows]
+        n_events = len(group_rows)
+
+        event_dfs = []  # for aggregation
+        raw_event_sheets = []  # (event_num, shower_on, window_end, pm_df)
+
+        for event in group_rows:
+            pm_df = build_event_pm_1min(event, c_room_1min, sensor_cache)
+            if not pm_df.empty:
+                event_dfs.append(pm_df)
+            raw_event_sheets.append(
+                (
+                    int(event["event_number"]),
+                    event["shower_on"],
+                    event["deposition_end"],
+                    pm_df,
+                )
+            )
+
+        # --- Aggregated group ---
+        if event_dfs:
+            agg = aggregate_group_events(event_dfs)
+            flat_df = flatten_columns(agg)
+            if sig_figs_enabled:
+                flat_df = sf.apply_sig_figs_to_df(flat_df)
+            agg_groups[norm_key] = (norm_key, n_events, event_nums, flat_df)
+        else:
+            print(f"    [{norm_key}] no 1-min data; omitted from aggregated workbook.")
+
+        # --- Raw workbook for this group ---
+        if any(not r[3].empty for r in raw_event_sheets):
+            raw_path = raw_dir / f"{group_sheet_names[norm_key]}_raw.xlsx"
+            write_c_room_raw_workbook(raw_path, norm_key, raw_event_sheets)
+            print(f"    [{norm_key}] raw workbook: {raw_path.name}")
+        else:
+            print(f"    [{norm_key}] no minutes; raw workbook skipped.")
+
+    # --- Aggregated workbook ---
+    if agg_groups:
+        agg_path = sensor_dir / f"{label}_event_config_timeseries.xlsx"
+        write_excel(agg_path, agg_groups, group_keys)
+        print(f"  Aggregated workbook: {agg_path.name} ({len(agg_groups)} sheet(s))")
+    else:
+        print(f"  No aggregated groups produced for {label}.")
+
+
 # =============================================================================
 # Main
 # =============================================================================
 
 
-def run(sensor_ids: list, sig_figs_enabled: bool = True) -> None:
-    """Load events and shared env data, then process each sensor."""
+def run(sensor_ids: list, sig_figs_enabled: bool = True, c_room: bool = False) -> None:
+    """Load events and shared env data, then process sensors or C_room."""
     sf.set_enabled(sig_figs_enabled)
 
     output_root = get_data_root() / "output" / "event_config_timeseries_fleet"
@@ -658,9 +981,12 @@ def run(sensor_ids: list, sig_figs_enabled: bool = True) -> None:
     cache_events["shower_on"] = cache_events["shower_on"] - PRE_SHOWER_LEAD
     sensor_cache = preload_sensor_data(cache_events.to_dict("records"))
 
-    for sid in sensor_ids:
-        sn = _normalize_sn(sid)
-        process_sensor(sn, valid, sensor_cache, output_root, sig_figs_enabled)
+    if c_room:
+        process_c_room(valid, sensor_cache, output_root, sig_figs_enabled)
+    else:
+        for sid in sensor_ids:
+            sn = _normalize_sn(sid)
+            process_sensor(sn, valid, sensor_cache, output_root, sig_figs_enabled)
 
     print(f"\nDone. Output root: {output_root}")
 
@@ -683,10 +1009,24 @@ def main() -> None:
         default=None,
         help="Optional subset of sensor IDs to process (default: all 14).",
     )
+    parser.add_argument(
+        "--c-room",
+        action="store_true",
+        help="Process only the C_room position-weighted fleet average pseudo-sensor.",
+    )
     args = parser.parse_args()
 
+    if args.c_room and args.sensors:
+        parser.error(
+            "--sensors cannot be combined with --c-room (C_room always uses the full fleet)."
+        )
+
     sensor_ids = args.sensors if args.sensors else SENSOR_IDS
-    run(sensor_ids=sensor_ids, sig_figs_enabled=not args.no_sig_figs)
+    run(
+        sensor_ids=sensor_ids,
+        sig_figs_enabled=not args.no_sig_figs,
+        c_room=args.c_room,
+    )
 
 
 if __name__ == "__main__":
