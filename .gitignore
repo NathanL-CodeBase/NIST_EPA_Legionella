@@ -216,6 +216,7 @@ data_config.json
 # DAQ instrument information
 docs/*.pdf
 docs/*.xlsx
+docs/*.docx
 
 # OS Specific
 Thumbs.db
