@@ -43,6 +43,9 @@ Update log:
                 points in the 30-min pre and 2-hr post windows (matching
                 rh_temp_other_analysis.py), with pooled std whiskers. Color
                 encodes window (pre vs post); markers at window midpoints.
+    2026-09-10  Add a summary Div below each pre/post figure with the paired
+                pre->post change: mean difference +/- std across events with
+                data in both windows, and a paired t-test (scipy.stats.ttest_rel).
 """
 
 import sys
@@ -50,13 +53,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from bokeh.models import ColumnDataSource, DatetimeTickFormatter, HoverTool, Whisker
-from bokeh.models.annotations import Whisker
+from bokeh.layouts import column as bokeh_column
+from bokeh.models import ColumnDataSource, DatetimeTickFormatter, Div, HoverTool, Whisker
 from bokeh.plotting import figure, output_file, save
+from scipy.stats import ttest_rel
 
 # Add project root to path for src/ imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import src.sig_figs as sf  # noqa: E402
 from src.data_paths import get_common_file  # noqa: E402
 from src.env_data_loader import (  # noqa: E402
     identify_shower_events,
@@ -64,6 +69,7 @@ from src.env_data_loader import (  # noqa: E402
     load_shower_log,
 )
 from src.plot_style import COLORS, SENSOR_COLORS, style_moduair_figure  # noqa: E402
+from src.plot_style import MODUAIR_FIGURE_WIDTH, MODUAIR_TEXT_PT  # noqa: E402
 
 # =============================================================================
 # Configuration
@@ -358,6 +364,97 @@ def build_pre_post_stats(events: list) -> dict:
     return stats
 
 
+def compute_pre_post_change(stats: dict, column: str) -> dict:
+    """
+    Compute paired pre->post change statistics for one variable.
+
+    Events are paired on shower_on, which is present in both the pre and post
+    window stats. For each paired event, the change is the post pooled mean
+    minus the pre pooled mean. A paired t-test checks whether the mean change
+    differs from zero.
+
+    Parameters
+    ----------
+    stats : dict
+        Output of build_pre_post_stats.
+    column : str
+        Value column to summarize ("temp_c" or "rh_pct").
+
+    Returns
+    -------
+    dict
+        n (paired event count), mean_diff, std_diff, t_stat, p_value.
+        t_stat and p_value are NaN when n < 2 (ttest_rel requires at least 2
+        paired observations).
+    """
+    mean_col = f"{column}_mean"
+    pre = stats["pre"][["shower_on", mean_col]].rename(columns={mean_col: "pre_mean"})
+    post = stats["post"][["shower_on", mean_col]].rename(columns={mean_col: "post_mean"})
+    merged = pre.merge(post, on="shower_on", how="inner")
+
+    diff = merged["post_mean"] - merged["pre_mean"]
+    n = len(merged)
+    result = {
+        "n": n,
+        "mean_diff": diff.mean() if n else np.nan,
+        "std_diff": diff.std() if n else np.nan,
+        "t_stat": np.nan,
+        "p_value": np.nan,
+    }
+    if n >= 2:
+        result["t_stat"], result["p_value"] = ttest_rel(merged["post_mean"], merged["pre_mean"])
+    return result
+
+
+def _format_p_value(p_value: float) -> str:
+    """Format a p-value for display, using '< 0.001' below that threshold."""
+    if not np.isfinite(p_value):
+        return "n/a"
+    if p_value < 0.001:
+        return "p < 0.001"
+    return f"p = {sf.fmt_fig(p_value)}"
+
+
+def make_pre_post_summary_div(stats: dict, kind: str) -> Div:
+    """
+    Build a Div summarizing paired pre->post change for one variable.
+
+    Parameters
+    ----------
+    stats : dict
+        Output of build_pre_post_stats.
+    kind : str
+        Key into PRE_POST_FIGURES ("temp" or "rh").
+
+    Returns
+    -------
+    Div
+        Bokeh Div with the paired mean change, std, n, and t-test result.
+    """
+    cfg = PRE_POST_FIGURES[kind]
+    change = compute_pre_post_change(stats, cfg["column"])
+    unit = "°C" if kind == "temp" else " pct RH"
+
+    if change["n"] == 0:
+        text = "Paired pre/post change: no events with data in both windows."
+    else:
+        mean_str = sf.fmt_fig(change["mean_diff"])
+        std_str = sf.fmt_fig(change["std_diff"]) if change["n"] > 1 else "n/a"
+        p_str = _format_p_value(change["p_value"])
+        t_str = sf.fmt_fig(change["t_stat"]) if np.isfinite(change["t_stat"]) else "n/a"
+        text = (
+            f"Paired pre→post change (n = {change['n']} events): "
+            f"mean Δ = {mean_str} ± {std_str}{unit} "
+            f"(paired t-test: t = {t_str}, {p_str})"
+        )
+
+    return Div(
+        text=text,
+        width=MODUAIR_FIGURE_WIDTH,
+        styles={"font-size": MODUAIR_TEXT_PT},
+    )
+
+
 # =============================================================================
 # Plotting
 # =============================================================================
@@ -530,7 +627,8 @@ def make_pre_post_figure(stats: dict, kind: str) -> None:
         days="%Y-%m-%d", hours="%m-%d %H:%M", minutes="%H:%M"
     )
 
-    save(fig)
+    summary_div = make_pre_post_summary_div(stats, kind)
+    save(bokeh_column(fig, summary_div))
     print(f"  Saved {output_path}")
 
 
