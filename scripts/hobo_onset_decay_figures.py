@@ -38,6 +38,11 @@ Institution: National Institute of Standards and Technology (NIST)
 Created: 2026-09-09
 Update log:
     2026-09-09  Initial version.
+    2026-09-10  Add pre/post per-event figures. Each event shows one pre point
+                and one post point: the pooled mean across all five sensors' raw
+                points in the 30-min pre and 2-hr post windows (matching
+                rh_temp_other_analysis.py), with pooled std whiskers. Color
+                encodes window (pre vs post); markers at window midpoints.
 """
 
 import sys
@@ -45,20 +50,20 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from bokeh.models import ColumnDataSource, DatetimeTickFormatter, HoverTool
+from bokeh.models import ColumnDataSource, DatetimeTickFormatter, HoverTool, Whisker
 from bokeh.models.annotations import Whisker
 from bokeh.plotting import figure, output_file, save
 
 # Add project root to path for src/ imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.data_paths import get_common_file  # noqa: E402
 from src.env_data_loader import (  # noqa: E402
     identify_shower_events,
     load_hobo_data,
     load_shower_log,
 )
-from src.data_paths import get_data_root  # noqa: E402
-from src.plot_style import SENSOR_COLORS, style_moduair_figure  # noqa: E402
+from src.plot_style import COLORS, SENSOR_COLORS, style_moduair_figure  # noqa: E402
 
 # =============================================================================
 # Configuration
@@ -101,11 +106,12 @@ WINDOWS = {
     },
 }
 
-# Pre/post windows for the per-event mean figures. These match the windows used
-# in scripts/rh_temp_other_analysis.py (PRE_SHOWER_MINUTES = 30 before shower_on,
-# POST_SHOWER_HOURS = 2 after shower_off). Each event contributes one mean with
-# std per window, placed at the window midpoint. Marker convention parallels the
-# onset/decay figures: circle = pre-shower, square = post-shower.
+# Pre/post windows for the per-event pooled-mean figures. These match the windows
+# used in scripts/rh_temp_other_analysis.py (PRE_SHOWER_MINUTES = 30 before
+# shower_on, POST_SHOWER_HOURS = 2 after shower_off). For each event, the raw
+# points from all five sensors in a window are pooled; the marker is the mean of
+# that pool and the whisker is its std. One pre point and one post point per
+# event, placed at the window midpoint. Color encodes window (pre vs post).
 PRE_SHOWER_MINUTES = 30
 POST_SHOWER_HOURS = 2
 PRE_POST_WINDOWS = {
@@ -114,19 +120,21 @@ PRE_POST_WINDOWS = {
         "start_offset": pd.Timedelta(minutes=-PRE_SHOWER_MINUTES),
         "end_anchor": "shower_on",
         "end_offset": pd.Timedelta(0),
-        "marker": "circle",
+        "color": COLORS["pre_shower"],
+        "legend": "Pre-shower",
     },
     "post": {
         "start_anchor": "shower_off",
         "start_offset": pd.Timedelta(0),
         "end_anchor": "shower_off",
         "end_offset": pd.Timedelta(hours=POST_SHOWER_HOURS),
-        "marker": "square",
+        "color": COLORS["post_shower"],
+        "legend": "Post-shower",
     },
 }
 
-# Output directory: output/plots/hobo/ under data_root from data_config.json.
-FIGURE_DIR = Path(get_data_root()) / "output" / "plots" / "hobo"
+# Output directory: data_root/output/plots/hobo/ from data_config.json
+FIGURE_DIR = get_common_file("output_folder") / "plots" / "hobo"
 
 # Per-figure y-axis label, value column in the loader output, and legend corner.
 FIGURES = {
@@ -273,14 +281,16 @@ def build_windowed_frames(events: list) -> dict:
 
 def build_pre_post_stats(events: list) -> dict:
     """
-    Compute per-event pre and post window mean, std, and midpoint per sensor.
+    Compute per-event pooled pre and post window stats across all five sensors.
 
-    For each sensor and each event, the pre window is the 30 minutes before
+    For each event and window, the raw points from all five sensors that fall in
+    the window are pooled into a single set; the marker value is the mean of that
+    pool and the whisker is its std. The pre window is the 30 minutes before
     shower_on and the post window is the 2 hours after shower_off, matching
     PRE_SHOWER_MINUTES and POST_SHOWER_HOURS in scripts/rh_temp_other_analysis.py.
-    Windows are inclusive on both ends. The marker for an event is placed at the
-    window midpoint. Events with no sensor points in a window are counted and
-    skipped for that sensor and window.
+    Windows are inclusive on both ends. The marker is placed at the window
+    midpoint. Events with no points from any sensor in a window are counted and
+    skipped for that window.
 
     Parameters
     ----------
@@ -290,49 +300,61 @@ def build_pre_post_stats(events: list) -> dict:
     Returns
     -------
     dict
-        Nested mapping {sensor_key: {window: DataFrame}} where each DataFrame has
-        midpoint, temp_c_mean, temp_c_std, rh_pct_mean, rh_pct_std, shower_on,
-        and n_points columns, one row per event with data in that window.
+        Mapping {window: DataFrame} where each DataFrame has midpoint, shower_on,
+        temp_c_mean, temp_c_std, rh_pct_mean, rh_pct_std, n_points (pooled point
+        count), and n_sensors (sensors contributing) columns, one row per event
+        with pooled data in that window.
     """
-    stats = {}
+    # Load each sensor once; reuse across all events and both windows.
+    sensor_frames = {}
     for sn in SENSOR_ORDER:
         df = load_hobo_data(sn, PERIOD_START, PERIOD_END)
-        stats[sn] = {}
         if df.empty:
-            print(f"  [WARN] No HOBO data for {sn} in period; skipping sensor.")
-            for window in PRE_POST_WINDOWS:
-                stats[sn][window] = pd.DataFrame()
+            print(f"  [WARN] No HOBO data for {sn} in period; excluded from pool.")
             continue
+        sensor_frames[sn] = df.assign(_times=pd.DatetimeIndex(df["datetime"]))
 
-        times = pd.DatetimeIndex(df["datetime"])
-        for window, spec in PRE_POST_WINDOWS.items():
-            rows = []
-            n_empty = 0
-            for ev in events:
-                start = ev[spec["start_anchor"]] + spec["start_offset"]
-                end = ev[spec["end_anchor"]] + spec["end_offset"]
-                mask = (times >= start) & (times <= end)
-                sub = df.loc[mask]
+    stats = {}
+    for window, spec in PRE_POST_WINDOWS.items():
+        rows = []
+        n_empty = 0
+        for ev in events:
+            start = ev[spec["start_anchor"]] + spec["start_offset"]
+            end = ev[spec["end_anchor"]] + spec["end_offset"]
+
+            pooled = []
+            n_sensors = 0
+            for df in sensor_frames.values():
+                mask = (df["_times"] >= start) & (df["_times"] <= end)
+                sub = df.loc[mask, ["temp_c", "rh_pct"]]
                 if sub.empty:
-                    n_empty += 1
                     continue
-                midpoint = start + (end - start) / 2
-                rows.append(
-                    {
-                        "midpoint": midpoint,
-                        "shower_on": ev["shower_on"],
-                        "temp_c_mean": sub["temp_c"].mean(),
-                        "temp_c_std": sub["temp_c"].std(),
-                        "rh_pct_mean": sub["rh_pct"].mean(),
-                        "rh_pct_std": sub["rh_pct"].std(),
-                        "n_points": len(sub),
-                    }
-                )
-            stats[sn][window] = pd.DataFrame(rows)
-            print(
-                f"  {sn} {window}: {len(rows)} events with data"
-                + (f", {n_empty} events with no points (skipped)" if n_empty else "")
+                pooled.append(sub)
+                n_sensors += 1
+
+            if not pooled:
+                n_empty += 1
+                continue
+
+            pool = pd.concat(pooled, ignore_index=True)
+            midpoint = start + (end - start) / 2
+            rows.append(
+                {
+                    "midpoint": midpoint,
+                    "shower_on": ev["shower_on"],
+                    "temp_c_mean": pool["temp_c"].mean(),
+                    "temp_c_std": pool["temp_c"].std(),
+                    "rh_pct_mean": pool["rh_pct"].mean(),
+                    "rh_pct_std": pool["rh_pct"].std(),
+                    "n_points": len(pool),
+                    "n_sensors": n_sensors,
+                }
             )
+        stats[window] = pd.DataFrame(rows)
+        print(
+            f"  {window}: {len(rows)} events with pooled data"
+            + (f", {n_empty} events with no points (skipped)" if n_empty else "")
+        )
     return stats
 
 
@@ -417,12 +439,13 @@ def make_figure(frames: dict, kind: str) -> None:
 
 def make_pre_post_figure(stats: dict, kind: str) -> None:
     """
-    Build and save one pre/post per-event mean figure (temperature or RH).
+    Build and save one pre/post per-event pooled-mean figure (temperature or RH).
 
-    Each event contributes one circle (pre-shower mean) and one square
-    (post-shower mean) at the respective window midpoint, with a whisker showing
-    mean +/- std. Std is also in the hover. Five sensors are distinguished by
-    color; circle = pre and square = post parallel the onset/decay figures.
+    Each event contributes one pre point and one post point, each the pooled mean
+    across all five sensors' raw points in that window, at the window midpoint,
+    with a whisker showing pooled mean +/- pooled std. Std, pooled point count,
+    and contributing-sensor count are in the hover. Color encodes window: pre and
+    post are two colors, with a two-entry legend (Pre-shower, Post-shower).
 
     Parameters
     ----------
@@ -448,62 +471,60 @@ def make_pre_post_figure(stats: dict, kind: str) -> None:
 
     hover = HoverTool(
         tooltips=[
-            ("Sensor", "@sensor"),
             ("Window", "@window"),
             ("Time", "@time_str"),
             ("Mean", f"@value{{{cfg['value_fmt']}}}"),
             ("Std", f"@std{{{cfg['value_fmt']}}}"),
+            ("Pooled points", "@n_points"),
+            ("Sensors", "@n_sensors"),
         ]
     )
     fig.add_tools(hover)
 
-    for sn in SENSOR_ORDER:
-        color = SENSOR_COLOR[sn]
-        label = SENSOR_LABELS[sn]
-        for window, spec in PRE_POST_WINDOWS.items():
-            wdf = stats[sn][window]
-            if wdf.empty:
-                continue
-            mean_vals = wdf[mean_col]
-            std_vals = wdf[std_col].fillna(0.0)
-            source = ColumnDataSource(
-                data={
-                    "time": wdf["midpoint"],
-                    "value": mean_vals,
-                    "std": std_vals,
-                    "upper": mean_vals + std_vals,
-                    "lower": mean_vals - std_vals,
-                    "sensor": [label] * len(wdf),
-                    "window": [window] * len(wdf),
-                    "time_str": wdf["midpoint"].dt.strftime("%Y-%m-%d %H:%M:%S"),
-                }
-            )
-            # One legend entry per sensor; circle = pre, square = post share it
-            # so click-to-hide toggles both windows together.
-            fig.scatter(
-                "time",
-                "value",
-                source=source,
-                marker=spec["marker"],
-                size=7,
-                color=color,
-                alpha=0.8,
-                legend_label=label,
-            )
-            whisker = Whisker(
-                base="time",
-                upper="upper",
-                lower="lower",
-                source=source,
-                line_color=color,
-                line_alpha=0.6,
-            )
-            whisker.upper_head.line_color = color
-            whisker.lower_head.line_color = color
-            fig.add_layout(whisker)
+    for window, spec in PRE_POST_WINDOWS.items():
+        wdf = stats[window]
+        if wdf.empty:
+            continue
+        color = spec["color"]
+        mean_vals = wdf[mean_col]
+        std_vals = wdf[std_col].fillna(0.0)
+        source = ColumnDataSource(
+            data={
+                "time": wdf["midpoint"],
+                "value": mean_vals,
+                "std": std_vals,
+                "upper": mean_vals + std_vals,
+                "lower": mean_vals - std_vals,
+                "window": [spec["legend"]] * len(wdf),
+                "n_points": wdf["n_points"],
+                "n_sensors": wdf["n_sensors"],
+                "time_str": wdf["midpoint"].dt.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+        fig.scatter(
+            "time",
+            "value",
+            source=source,
+            marker="circle",
+            size=7,
+            color=color,
+            alpha=0.8,
+            legend_label=spec["legend"],
+        )
+        whisker = Whisker(
+            base="time",
+            upper="upper",
+            lower="lower",
+            source=source,
+            line_color=color,
+            line_alpha=0.6,
+        )
+        whisker.upper_head.line_color = color
+        whisker.lower_head.line_color = color
+        fig.add_layout(whisker)
 
     # Shared MODULAIR style: 1600x800, 12pt, no title, click-to-hide legend.
-    style_moduair_figure(fig, legend_title="Sensor", legend_location=cfg["legend_location"])
+    style_moduair_figure(fig, legend_title="Window", legend_location=cfg["legend_location"])
 
     fig.xaxis.formatter = DatetimeTickFormatter(
         days="%Y-%m-%d", hours="%m-%d %H:%M", minutes="%H:%M"
@@ -549,7 +570,7 @@ def main() -> None:
     print("\nBuilding pre/post per-event mean frames...")
     stats = build_pre_post_stats(events)
 
-    pre_post_points = sum(len(stats[sn][w]) for sn in SENSOR_ORDER for w in PRE_POST_WINDOWS)
+    pre_post_points = sum(len(stats[w]) for w in PRE_POST_WINDOWS)
     if pre_post_points == 0:
         print("  [WARN] No events with data in any pre/post window; skipping pre/post figures.")
     else:
