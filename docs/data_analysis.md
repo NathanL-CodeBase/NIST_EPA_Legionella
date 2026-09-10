@@ -1,20 +1,50 @@
 # Data Analysis
 
-> **Author note:** Equation numbers, section cross-references, and items marked
-> `[PLACEHOLDER: ...]` require PI review before submission. Equation numbering uses
-> the format (3-N) for Section 3; renumber as needed when assembled into the full report.
+> **Author note:** Equation numbers and section cross-references require PI review before
+> submission. Equation numbering uses the format (3-N) for Section 3; renumber when
+> assembled into the full report. Items marked `[CHECK: ...]` are unresolved conflicts
+> between this repository and the draft report; each names both values so the correct one
+> can be confirmed rather than guessed.
+>
+> The analysis pipeline changed substantially between June and September 2026. Section 3.4
+> describes the current aerosol analysis, built on the MODULAIR-PM fleet. Section 3.9
+> records what the draft report describes that no script in this repository implements.
 
 ---
 
 ## 3.1 Overview
 
-Raw sensor data, shower event logs, and CO₂ injection logs were processed through a multi-step analysis pipeline implemented in Python (version 3.14.2; key library versions: NumPy 2.4.1, SciPy 1.17.0, pandas 2.3.3). All analysis scripts and source modules are archived in the companion data and code repository (DOI: 10.18434/mds2-4153). Three analysis domains were treated independently:
+Raw sensor data, shower event logs, and CO₂ injection logs are processed through a Python pipeline (Python 3.14.2; NumPy 2.4.1, SciPy 1.17.0, pandas 2.3.3, Bokeh for interactive figures). All scripts and source modules are archived in the companion data and code repository (DOI: 10.18434/mds2-4153). Four analysis domains are treated:
 
-1. **Air change rate (CO₂ decay):** The volumetric air exchange rate between Bedroom #1 and the outdoor environment was determined from the exponential decay of CO₂ tracer gas concentration following each injection event.
-2. **Particle analysis:** Size-resolved particle number concentrations from the indoor and outdoor QuantAQ MODULAIR-PM sensors were used to estimate the penetration factor, other process rate, and shower aerosol emission rate for each event and each of 12 optical particle counter size bins.
-3. **Environmental conditions:** Relative humidity (RH), temperature, and wind data from all co-located sensors were summarized over pre- and post-shower time windows.
+1. **Air change rate (CO₂ decay).** The air exchange rate between Bedroom #1 and its surroundings is determined from the exponential decay of injected CO₂ after each event (Section 3.3).
+2. **Room uniformity and the room-average concentration.** The MODULAIR-PM fleet installed 2026-06-04 establishes whether the bedroom can be treated as a single well-mixed zone, and produces the position-weighted room average C_room and the correction that transfers it to the single-monitor record (Sections 3.4.1 to 3.4.3).
+3. **Aerosol mass balance.** Penetration factor, aerosol loss rate, and shower emission rate are estimated per event and per size bin from the room-average concentration (Sections 3.4.4 to 3.4.7).
+4. **Environmental conditions.** Relative humidity, temperature, and wind are summarized over pre- and post-shower windows and over the onset and decay windows (Section 3.5).
 
-All three analyses are driven by a unified event registry (Section 3.2) that assigns a consistent event number, test name, and metadata record to every shower event.
+All four are driven by a unified event registry (Section 3.2) that assigns a consistent event number, test name, and metadata record to every shower event.
+
+### 3.1.1 Which Scripts Are Current
+
+The aerosol analysis was rebuilt around the MODULAIR-PM fleet between June and September 2026. Not every script in the repository is part of the current pipeline.
+
+**Current, and the basis for the draft report:**
+
+| Script | Role |
+|---|---|
+| `scripts/event_registry.py` | Event registry, naming, exclusions |
+| `scripts/co2_decay_analysis.py` | Air change rate λ |
+| `src/moduair_loader.py` | MODULAIR-PM fleet chunk loader |
+| `scripts/moduair_event_peak_times.py` | Per-monitor delta peak times (room uniformity) |
+| `scripts/moduair_bin2_timeseries.py` | Per-bin fleet time series with C_room overlay |
+| `scripts/moduair_correction_factor.py` | Inter-sensor ratios and the 195/813 Deming fit |
+| `scripts/moduair_cave_ratio.py` | C_room, and the C_bed1 to C_room comparison |
+| `scripts/export_config_timeseries_fleet.py` | Per-sensor and C_room config time-series exports |
+| `scripts/rh_temp_other_analysis.py` | RH, temperature, and wind summaries |
+| `scripts/hobo_onset_decay_figures.py` | HOBO onset/decay and pre/post figures |
+
+**Superseded.** `scripts/particle_decay_analysis.py` and the calculation functions in `src/particle_calculations.py` implement the earlier single-sensor mass balance: one air change rate (λ_average), one control volume (`BEDROOM_VOLUME_M3 = 36.1`), a four-step R²-based acceptance hierarchy for β, and one emission rate. That path does not use C_room and is not what informs the draft report. It is documented in Section 3.8 because its outputs are still referenced by older figures.
+
+[CHECK: `run_analysis_workflow.py` still lists `scripts/particle_decay_analysis.py` as the final pipeline step, so a full workflow run regenerates superseded outputs alongside current ones. Confirm whether that step should be removed, or the script updated to consume C_room.]
 
 ---
 
@@ -22,45 +52,49 @@ All three analyses are driven by a unified event registry (Section 3.2) that ass
 
 ### 3.2.1 Shower Event Detection
 
-Shower start and stop times were recorded by the automated control system in a comma-separated log file (`shower_log_file.csv`). Each row represents a discrete state change — shower on, shower off, bathroom fan on, or bathroom fan off — with a high-resolution timestamp. Consecutive on/off pairs for each device were parsed into individual events, each characterized by start time, stop time, and duration. Only events that began on or after January 15, 2026 at 15:00 (the official experiment start cutoff) were retained.
+Shower start and stop times are recorded by the automated control system in `shower_log_file.csv`. Each row is a discrete state change: shower on, shower off, bathroom fan on, or bathroom fan off, with a high-resolution timestamp. Consecutive on/off pairs per device are parsed into individual events characterized by start time, stop time, and duration. Only events beginning on or after 2026-01-15 15:00 are retained.
+
+Analysis events run at 03:00 and 15:00 (Section 2.3.2). `scripts/moduair_event_peak_times.py` applies this directly, keeping only ON transitions within ±5 minutes of those two times so that off-hour water temperature verification runs are dropped before any fleet figure is built.
 
 ### 3.2.2 CO₂ Event Matching
 
-CO₂ injection events were independently logged in `CO2_log_file.csv`, which records timestamps for CO₂ valve state changes and mixing fan activations. Each CO₂ injection event was matched to the nearest shower event within a bidirectional tolerance window of ±10 minutes. Matches were made one-to-one; unmatched shower events were assigned a synthetic CO₂ placeholder record with an inferred duration estimated from neighboring matched events, so that the event registry remained complete and consistently numbered regardless of CO₂ data availability.
+CO₂ injection events are logged independently in `CO2_log_file.csv`, which records valve state changes and mixing fan activations. Each injection event is matched to the nearest shower event within a bidirectional tolerance of ±10 minutes, one to one. Unmatched shower events receive a synthetic CO₂ placeholder record with a duration inferred from neighboring matched events, so the registry stays complete and consistently numbered regardless of CO₂ data availability.
 
 ### 3.2.3 Event Numbering and Naming
 
-Successfully matched shower–CO₂ pairs were assigned sequential integer event numbers beginning at 1. Each event was also assigned a structured test name (Section 2.2.5) based on the active test configuration at the event's start time, as determined by the time-stamped configuration transition tables maintained in the event management module (`src/event_manager.py`). The air change rate (λ) from the CO₂ decay analysis was stored in the registry for each event that had a valid CO₂ match; events relying on synthetic CO₂ records were flagged accordingly and used a λ value carried forward from the nearest valid event of the same configuration [PLACEHOLDER: confirm whether forward-carrying of λ is used or whether such events are excluded from particle analysis].
+Matched shower and CO₂ pairs receive sequential integer event numbers from 1. Each event also receives a structured test name (Section 2.2.6) based on the configuration active at its start time, resolved from the time-stamped transition tables in `src/event_manager.py`. The air change rate λ from the CO₂ decay analysis is stored in the registry for every event with a valid CO₂ match.
+
+[CHECK: events relying on a synthetic CO₂ record are flagged, but whether they carry a λ forward from the nearest valid event of the same configuration, or are dropped from aerosol analysis entirely, is not stated in the code comments. Confirm the intended behavior and make the code match.]
 
 ### 3.2.4 Exclusion Criteria
 
-Events were excluded from analysis using the criteria described below. Excluded events are retained in the registry with an `is_excluded = True` flag, a null event number, and an `exclusion_reason` field. Exclusions were applied before any analysis step; excluded events do not appear in summary outputs.
+Excluded events stay in the registry with `is_excluded = True`, a null event number, and an `exclusion_reason`. Exclusions are applied before any analysis step and excluded events do not appear in summary outputs.
 
-**Duration-based exclusion.** Because the automated control system enforced a nominal 10.0-minute shower duration, any shower event with a measured duration outside the range 9 min 55 s to 10 min 5 s (10.0 min ± 5 s) was assumed to represent a manual water-temperature verification run or a control-system test rather than an analysis event. Such events were flagged with `exclusion_reason = "Water temperature testing (duration: X.X min)"` and excluded from all analysis.
+**Duration-based exclusion.** Any shower event measuring outside 9 min 55 s to 10 min 5 s is treated as a manual water temperature verification run or a control-system test and excluded, with `exclusion_reason = "Water temperature testing (duration: X.X min)"`.
 
-**Predefined individual event exclusions.** Four specific events were excluded due to documented confounding activities (personnel inside the home):
+**Predefined individual event exclusions.** Four events are excluded for documented confounding activity:
 
 | Date and time | Reason |
 |---|---|
-| 2026-01-22 15:00 | Tour in house |
+| 2026-01-22 15:00 | Tour in house during test |
 | 2026-01-29 15:00 | People in house |
 | 2026-05-13 15:00 | LVP flooring installation |
 | 2026-05-21 15:00 | Bathroom flooring removal |
 
-**Predefined date range exclusions.** Four date ranges were excluded due to known data quality or operational issues:
+The last two are also permanent changes to the interior surfaces of the test rooms, not one-day disturbances. See the note at the end of Section 2.8.
+
+**Predefined date range exclusions.** Four ranges are excluded:
 
 | Excluded range | Reason |
 |---|---|
-| 2026-02-11 08:00 to 2026-02-13 11:00 | Conflicting log entries during water temperature configuration change |
-| 2026-03-08 00:00 to 2026-03-10 00:00 | Daylight saving time clock change; elevated indoor RH of uncertain origin |
+| 2026-02-11 08:00 to 2026-02-13 11:00 | Conflicting log entries during a water temperature configuration change |
+| 2026-03-08 00:00 to 2026-03-10 00:00 | Daylight saving clock change, instrument data misalignment, and elevated bedroom RH of uncertain origin |
 | 2026-03-14 00:00 to 2026-03-15 12:00 | CO₂ injection system failure |
 | 2026-05-11 00:00 to 2026-05-15 10:00 | CO₂ injection system failure |
 
-**Particle analysis-specific exclusions.** Two additional criteria were applied exclusively within the particle analysis pipeline (CO₂ decay results for these events were retained):
+**Aerosol analysis-specific exclusion.** Events whose CO₂ decay regression R² falls below 0.65 are excluded from aerosol analysis; the CO₂ result itself is retained. An unreliable λ propagates into the penetration factor, loss rate, and emission rate.
 
-1. Events for which the CO₂ decay regression R² was below 0.75 were excluded from particle analysis. An unreliable air change rate propagates uncertainty into the penetration factor, other process rate, and emission rate calculations; a minimum R² of 0.75 was judged the practical lower bound for a usable λ estimate.
-
-2. Events for which the indoor QuantAQ sensor's RH response peaked outside the first 45 minutes of the deposition analysis window were excluded. A late RH peak indicates that shower aerosol did not reach the bedroom sensor within the expected timeframe, suggesting an atypical airflow path for that event.
+[CHECK: the threshold is 0.65 in code (`scripts/event_registry.py`, line 992). Three docstrings in that same file still state 0.75, including the printed exclusion message on line 997, and the draft report states 0.75. Confirm the intended threshold, then correct whichever of the three does not match.]
 
 ---
 
@@ -68,230 +102,284 @@ Events were excluded from analysis using the criteria described below. Excluded 
 
 ### 3.3.1 Tracer Gas Decay Model
 
-Bedroom #1 is treated as a single, well-mixed zone. After the CO₂ mixing fan stops and before the shower begins, no internal CO₂ sources are active, and the mass balance on CO₂ in the bedroom reduces to:
+Bedroom #1 is treated as a single well-mixed zone. After the mixing fan stops and before the shower begins there are no internal CO₂ sources, and the CO₂ mass balance on the bedroom reduces to:
 
-$$\frac{dC}{dt} = \lambda \left( C_{bg} - C \right) \tag{3-1}$$
+$$V \frac{dC}{dt} = Q\,C_{bg} - Q\,C \quad\Longrightarrow\quad \frac{dC}{dt} = \lambda \left( C_{bg} - C \right) \tag{3-1}$$
 
-where $C(t)$ [ppm] is the bedroom CO₂ concentration, $\lambda$ [h⁻¹] is the air change rate, and $C_{bg}$ [ppm] is a time-constant background concentration representing the mixed composition of air entering the bedroom. $C_{bg}$ is approximated as a weighted average of the outdoor and entry zone concentrations:
+where $C(t)$ [ppm] is the bedroom CO₂ concentration, $\lambda = Q/V$ [h⁻¹] is the air change rate, and $C_{bg}$ [ppm] is a time-constant background concentration representing the mixed composition of air entering the bedroom. Three assumptions underlie Eq. (3-1): CO₂ outside and in the entryway does not change appreciably during the decay, airflow into and out of the room is balanced, and there are no interior CO₂ sources or sinks.
 
-$$C_{bg} = \alpha \cdot C_{out} + (1 - \alpha) \cdot C_{ent} \tag{3-2}$$
+Integrating with $C(0) = C_0$ and rearranging into a form suitable for linear regression:
 
-where $C_{out}$ is the outdoor CO₂ concentration (Aranet4 Outside), $C_{ent}$ is the entry zone CO₂ concentration (Aranet4 Entry), and $\alpha$ is the outdoor air fraction (default $\alpha = 0.5$). Both $C_{out}$ and $C_{ent}$ are averaged over the full decay window to produce a single scalar $C_{bg}$ for the regression.
+$$y(t) \equiv -\ln\!\left[\frac{C(t) - C_{bg}}{C_0 - C_{bg}}\right] = \lambda \cdot t \tag{3-2}$$
 
-Integrating Eq. (3-1) with the initial condition $C(0) = C_0$:
+A linear regression of $y$ against $t$, with the intercept forced through the origin, gives $\lambda$ as the slope:
 
-$$C(t) = C_{bg} + \left(C_0 - C_{bg}\right) e^{-\lambda t} \tag{3-3}$$
-
-Rearranging into a linear form suitable for regression:
-
-$$y(t) \equiv -\ln\!\left[\frac{C(t) - C_{bg}}{C_0 - C_{bg}}\right] = \lambda \cdot t \tag{3-4}$$
-
-where $y(t)$ is a dimensionless decay variable that increases linearly with time at rate $\lambda$. A linear regression of $y$ versus $t$, with the intercept forced through the origin, yields $\lambda$ as the slope.
+$$\hat{\lambda} = \frac{\displaystyle\sum_i t_i \cdot y_i}{\displaystyle\sum_i t_i^2} \tag{3-3}$$
 
 ### 3.3.2 Source Concentration Methods
 
-Three values of $\alpha$ were applied to each event to quantify sensitivity to the assumed source air composition:
+$C_{bg}$ is not directly measured. Air enters the bedroom through the gap under the bedroom door, which draws from the entryway, and through envelope cracks, which draw from outdoors. Both contribute in unknown proportion, so three values are computed for every event to bracket the result:
 
-| Method label | $\alpha$ | $C_{bg}$ definition |
+| Method | $C_{bg}$ | Symbol |
 |---|---|---|
-| Average (primary) | 0.5 | $0.5 \cdot C_{out} + 0.5 \cdot C_{ent}$ |
-| Outside only | 1.0 | $C_{out}$ |
-| Entry only | 0.0 | $C_{ent}$ |
+| Outside only | $C_{out}$ | $\lambda_{out}$ |
+| Entry only | $C_{ent}$ | $\lambda_{ent}$ |
+| Average | $0.5\,C_{out} + 0.5\,C_{ent}$ | $\lambda_{avg}$ |
 
-The resulting $\lambda$ values ($\lambda_{avg}$, $\lambda_{out}$, $\lambda_{ent}$) and their regression R² values are all stored in the event registry and reported in the output file `co2_lambda_summary.csv`. The average method value $\lambda_{avg}$ is used as the primary air change rate in all subsequent particle analysis.
+Each is averaged over the full decay window to give a single scalar for the regression. All three values, with their R², are written to `co2_lambda_summary.csv` and stored in the event registry.
+
+The draft report uses $\lambda_{out}$ and $\lambda_{ent}$ as a bracket on the true air change rate and carries both separately through the mass balance. The superseded single-sensor pipeline used $\lambda_{avg}$ alone.
 
 ### 3.3.3 Data Preprocessing
 
-Aranet4 data from three locations (Bedroom, Entry, Outside) were loaded from manufacturer-exported Excel files. Timestamps were parsed and data were resampled to a regular 1-minute grid by linear interpolation. A 6-minute centered rolling average was then applied to reduce sensor noise before the decay regression. The Bathroom Aranet4 data were included in event concentration time-series plots for spatial context but were not used in any λ calculation.
+Aranet4 data from Bedroom, Entry, and Outside are loaded from manufacturer-exported Excel files, parsed, resampled to a regular 1-minute grid by linear interpolation, then smoothed with a 6-minute centered rolling average before the regression. Bathroom Aranet4 data appear on event concentration plots for spatial context and are used in no λ calculation.
 
-### 3.3.4 Regression Procedure
+### 3.3.4 Regression Window
 
-For each shower event, the CO₂ decay analysis window was defined as:
+The decay window runs from shower_on + 10 min to shower_on + 2 h 10 min. Because every shower is exactly 10 minutes, this is identical to the window the draft report describes as shower-off to 2 hours after shower-off. The two descriptions agree; only the anchor differs.
 
-- **Start:** shower_on + 10 min (to allow any airflow transient from shower onset to settle before the regression window begins)
-- **End:** shower_on + 2 h 10 min (2-hour analysis window)
+The 10-minute offset from shower onset lets the airflow transient from shower start settle before the fit begins. $C_0$ is the first data point at window start, and $C_{bg}$ is computed once over the full 2-hour window.
 
-Within this window, the initial condition $C_0$ was taken as the first data point at window start ($t = 0$), and $C_{bg}$ was computed once as the mean of $C_{out}$ and $C_{ent}$ (or $C_{out}$ alone, or $C_{ent}$ alone, per Section 3.3.2) over the full 2-hour window. The decay variable $y(t)$ was computed at each 1-minute time step via Eq. (3-4), and the air change rate was estimated by ordinary least squares regression forced through the origin:
+A minimum initial concentration excess of 50 ppm is required for a valid regression.
 
-$$\hat{\lambda} = \frac{\displaystyle\sum_i t_i \cdot y_i}{\displaystyle\sum_i t_i^2} \tag{3-5}$$
+[CHECK: the code applies the 50 ppm criterion at the start of the window, as $C_0 - C_{bg} \geq 50$ ppm. The draft report states the criterion at the end, as the bedroom concentration at $t$ = 2 h being less than 50 ppm above the outside or entryway average. These reject different events. Confirm which was applied to the reported λ values.]
 
-The coefficient of determination $R^2$ was computed from the residuals of the fitted versus observed $y$ values. A minimum initial concentration excess of 50 ppm — that is, $C_0 - C_{bg} \geq 50$ ppm — was required for a valid regression; events not meeting this threshold were excluded from the CO₂ decay analysis.
-
-An optional analysis mode (`--entry-stop` flag) truncates the decay window when the bedroom concentration decays to within 100 ppm of the mean of the entry and outside concentrations:
-
-$$C_{bedroom}(t) \leq 100 + \frac{C_{ent}(t) + C_{out}(t)}{2} \tag{3-6}$$
-
-This prevents the regression from being influenced by low-signal data points when the tracer has nearly equilibrated with the background. This flag was not enabled for the primary analysis reported here.
+An optional mode (`--entry-stop`) truncates the window once the bedroom concentration decays to within 100 ppm of the mean of entry and outside, preventing low-signal points from influencing the fit. It was not enabled for the primary analysis.
 
 ### 3.3.5 Uncertainty Considerations
 
-The principal sources of uncertainty in the reported $\lambda$ are:
-
-1. **Statistical fitting uncertainty:** Standard error of the regression slope (Eq. 3-5), arising from random sensor noise and short-term concentration fluctuations.
-2. **Source concentration assumption:** The range of $\lambda_{avg}$, $\lambda_{out}$, and $\lambda_{ent}$ values quantifies sensitivity to the assumed spatial distribution of incoming air. In practice, this spread is the dominant contributor to inter-method uncertainty.
-3. **Well-mixed zone assumption:** The single-zone model assumes that the bedroom CO₂ is spatially uniform after the mixing fan stops. Residual spatial gradients in the first few minutes of the window may introduce systematic bias; the 10-minute delay at window start mitigates, but does not fully eliminate, this effect.
-4. **CO₂ sensor accuracy:** The Aranet4 PRO accuracy specification is ±50 ppm ± 3 % of reading. At typical bedroom peak concentrations of 1000–3000 ppm, this corresponds to an absolute accuracy of approximately ±80 ppm to ±140 ppm.
-5. **Ambient variability:** Outdoor wind speed and direction influence infiltration; the reported $\lambda$ represents the time-average over the 2-hour decay window rather than an instantaneous value.
+1. **Source concentration assumption.** The spread between $\lambda_{out}$ and $\lambda_{ent}$ is the dominant inter-method uncertainty and is reported as a bracket rather than collapsed to a single value.
+2. **Statistical fitting uncertainty.** Standard error of the regression slope, from sensor noise and short-term concentration fluctuation.
+3. **Well-mixed zone assumption.** The single-zone model assumes spatial uniformity of bedroom CO₂ after the mixing fan stops. The 10-minute offset at window start mitigates residual gradients but does not eliminate them. Note that Section 3.4.1 shows the bedroom is *not* uniform for aerosol during the first hour after a warm shower; CO₂ is injected and mixed 15 minutes before the shower and decays over a 2-hour window, which is a different and more favorable mixing problem, but the assumption is not automatically safe.
+4. **CO₂ sensor accuracy.** ±50 ppm ±3 % of reading. At the 1500 ppm to 2000 ppm injection peak, approximately ±95 ppm to ±110 ppm.
+5. **Ambient variability.** Outdoor wind speed and direction drive infiltration. The reported λ is a 2-hour time average, not an instantaneous value.
 
 ---
 
-## 3.4 Particle Analysis
+## 3.4 Aerosol Analysis
 
-### 3.4.1 Particle Size Bins
+All aerosol analyses run independently on each of the 12 OPC-N3 size bins in Table 2-3 (0.35 µm to 10.0 µm, indexed 0 to 11). Concentrations are number per cm³. Bin 2 (0.66 µm to 1.0 µm) is used for illustrative figures.
 
-All particle analyses were performed independently on each of the 12 OPC-N3 size bins defined in Table 2-3 (0.35–10.0 µm; bins indexed 0–11 from smallest to largest). Bins are organized into three reporting groups: fine particles (bins 0–2, 0.35–1.0 µm), accumulation and coarse particles (bins 3–6, 1.0–3.0 µm), and coarse particles (bins 7–11, 3.0–10.0 µm). The coarse group encompasses the size range most directly associated with respiratory aerosol deposition in the upper airways and, for the larger subfractions, gravitational settling timescales relevant to Legionella transmission risk. Particle concentrations from the QuantAQ sensors are in units of particles per cm³ (#/cm³). No rolling average was applied to the particle data prior to analysis; the 1-minute raw values were used directly.
+The mass balance in Section 3.4.4 requires that the bedroom be representable as a single uniform concentration. Sections 3.4.1 to 3.4.3 test that requirement, and the answer determines what concentration series the mass balance is given.
 
-### 3.4.2 Mass Balance Model
+### 3.4.1 Room Uniformity Assessment
 
-The indoor particle concentration in Bedroom #1 for size bin $k$ is governed by a first-order, single-zone mass balance:
+From 2026-06-04 the bedroom carried 10 monitors, and from 2026-07-08 it carried 14 (Section 2.5.1). Two analyses use that period.
 
-$$\frac{dC_{in}}{dt} = p \cdot \lambda \cdot C_{out} - \lambda \cdot C_{in} - \beta \cdot C_{in} + \frac{E}{V} \tag{3-7}$$
+**Per-bin concentration time series.** `scripts/moduair_bin2_timeseries.py` plots each bin's concentration for the co-located bedroom monitors over 2026-06-04 to 2026-07-16 as one interactive Bokeh figure per bin, one trace per monitor on a shared datetime axis, with the position-weighted C_room overlaid as a black trace. MOD-PM-00785 (outdoor) is excluded, and MOD-PM-00401 is dropped because it reads exactly zero for a large share of the window. Traces break at genuine data gaps so that missing periods are visible rather than interpolated across.
 
-where the symbols are defined as:
+**Delta peak time.** `scripts/moduair_event_peak_times.py` computes, for every event and every monitor, the elapsed time from shower on to the maximum of the summed bins 0 to 11 within [shower_on, shower_off + 2 h]. Monitors installed late are gated to their install time, so events before a monitor went live are blank for that monitor only rather than being filled with a spurious value. The output is a CSV of event by monitor in minutes and an interactive figure.
+
+The uniformity result is stratified by water temperature and is the reason a single-monitor concentration cannot be used directly:
+
+- At 38 °C to 41 °C, the two High monitors peak approximately 20 min after shower on, the Mid monitors at 30 min to 40 min, and the Low monitors at 40 min to 120 min. Peak concentration at High 1, under the ceiling pitch, reaches roughly 1.5 times the peak at the Middle Bathroom monitor less than 1 m from the shower head, and reaches it sooner. A thermal plume carries aerosol through the doorway above 1.1 m, bypassing the bathroom monitor, then spills down the walls. Thermal stratification then prevents vertical mixing for the rest of the analysis window.
+- At 23 °C the pattern inverts. The bathroom monitor peaks first and highest, the second monitor to respond is a Low monitor rather than a High one, bedroom peaks are similar across monitors, and decay is uniform with no second rise. There is little evidence of a thermal plume when water temperature is near air temperature.
+- At 51 °C the plume is stronger and longer lived. Concentrations peak and fall at one monitor before peaking at another, some monitors peak twice, and the larger bins above 2.3 µm carry much higher concentrations than at the other two temperatures.
+
+No single monitor represents the room average at any water temperature during the first hour.
+
+### 3.4.2 MOD-PM-00195 Campaign Correction
+
+Installing the fleet in June 2026 revealed that the historical MOD-PM-00195 record was biased. MOD-PM-00813 was placed alongside it at the Bed position, and `scripts/moduair_correction_factor.py` builds the co-located correlation over 2026-06-04 to 2026-07-16.
+
+Three diagnostic ratios are computed per bin on a shared time base:
+
+| Ratio | Definition |
+|---|---|
+| 813 | 195 / 813 |
+| quad | 195 / mean(515, 465, 943, 516) |
+| others | 195 / mean(remaining bedroom monitors, excluding 195, 785, 813, and the quad set) |
+
+A value near 1.0 means 195 agrees with the reference; a sustained offset is a candidate multiplicative correction.
+
+The correction itself is a per-bin orthogonal-distance (Deming) regression with 195 on the x-axis and 813 on the y-axis:
+
+$$C_{195,\text{corrected}} = m \cdot C_{195,\text{measured}} + b \tag{3-4}$$
+
+Deming rather than ordinary least squares, because OLS assumes the x variable is error free and would bias the slope. Both instruments are the same MODULAIR-PM model, so equal x and y error variance is assumed (delta = 1). Per-bin slope, intercept, and their standard errors are written to `moduair_correction_195_813_fit_jun04_jul16.csv`. The script fits and reports only; it does not modify the historical record.
+
+[CHECK: the fit is produced but no script applies it. Confirm whether the reported single-monitor results have the 195 correction applied, and if so, where that application happens.]
+
+### 3.4.3 Position-Weighted Room Average and Transfer to the Single-Monitor Record
+
+`scripts/moduair_cave_ratio.py` implements the room average. The bedroom is divided into four elevation zones, with each zone's upper and lower bound set at half the distance between the mean monitor heights of adjacent zones:
+
+| Zone | Monitors | High (m) | Low (m) | Weight |
+|---|---|---|---|---|
+| High | 402, 816 | 2.34 | 1.59 | 0.32 |
+| Mid | 814, 554, 942, 401, 815 | 1.59 | 0.94 | 0.28 |
+| Bed | 195, 813 | 0.94 | 0.47 | 0.20 |
+| Low | 515, 465, 943, 516, 467 | 0.47 | 0.00 | 0.20 |
+
+The High zone's upper bound of 2.34 m is the average height of the sloping ceiling. MOD-PM-00555 is deliberately excluded from the Mid zone because it is in the bathroom, not the bedroom. Weights are the fraction of total room height each zone spans. Each zone average is taken over its working monitors, and:
+
+$$C_{room} = 0.32\,C_{high} + 0.28\,C_{mid} + 0.20\,C_{bed} + 0.20\,C_{low} \tag{3-5}$$
+
+**Reporting-monitor filter.** C_room is computed only at 1-minute timestamps where more than eight fleet monitors report a finite, positive reading (`MIN_QUANTS = 8`, applied as strictly greater than). Minutes below that threshold are dropped rather than averaged over a partial fleet. For the aligned per-event curves the filter is applied per timestamp before averaging across events.
+
+**Comparison of C_bed1 to C_room.** Concentrations are the raw `opc_bin{N}` values on a shared 1-minute grid with no smoothing. Three comparisons are produced per bin:
+
+1. A scatter of C_bed1 against C_room over all qualifying 1-minute samples in the window, with a Deming fit and a 1:1 line, and a per-bin fit table of slope, intercept, r², and n.
+2. The ratio of the event-averaged C_bed1 to the event-averaged C_room against time, aligned on minute index with 0 at shower on, from 15 min before shower on through the 2-hour deposition window. Events are grouped by registry water temperature code into W38-W41, W49, and W24. A ±1 standard deviation band is drawn only at minutes where at least three events contribute.
+3. The same scatter restricted to W38-W41 events and split into two windows, each with its own Deming fit: **onset**, shower_on to shower_on + 60 min inclusive, and **decay**, shower_off + 60 min to shower_off + 120 min inclusive.
+
+The onset and decay split is the substantive result. Correlation between C_bed1 and C_room is weak during onset and strong during decay, and C_bed1 reads low against C_room in both. The draft report gives average r² = 0.60 for onset and 0.91 for decay across bins up to 3.0 µm, with average slopes of 1.29 and 1.14 respectively. The room is therefore not uniform during the first hour, and is close to uniform during the second.
+
+[CHECK: the draft report's Fig. 9 caption gives the onset slope as 1.25 while its body text gives 1.29, and its body text describes 73 experiments at 38 °C to 41 °C while its Fig. 10 caption describes 77. Confirm all four numbers against `moduair_room_ratio_fit_w38_w41.csv` and the event count the script reports.]
+
+**Transfer to the single-monitor record.** The bin-specific ratio of the averaged curves is applied to every event that had only Bed 1, to estimate a room average:
+
+$$C_{adjusted\,room}(t) = C_{bed\,1}(t) \cdot \frac{C_{room,average}(t)}{C_{bed\,1,average}(t)} \tag{3-6}$$
+
+Three ratio curves are derived and applied by water temperature: the W38-W41 curve to events between 38 °C and 41 °C, the 51 °C curve to events above 41 °C, and the 23 °C curve to events below 38 °C.
+
+[CHECK: Eq. (3-6) and the temperature-banded application appear in the draft report but in no script in this repository. `moduair_cave_ratio.py` produces the ratio curves; nothing consumes them to build C_adjusted room. Confirm where the adjustment is applied and whether that code should be added here.]
+
+Two limits on the transfer are worth stating explicitly. The ratio curves for temperatures other than 38 °C to 41 °C rest on two events each, so no uncertainty band is computed for them. And the ratio is derived entirely from the June to July fleet period, then applied backwards across a five-month single-monitor record during which the room's floor surfaces changed twice (Section 2.8).
+
+### 3.4.4 Mass Balance Model
+
+Indoor particle concentration in Bedroom #1 for size bin $k$ follows a first-order single-zone mass balance:
+
+$$V \frac{dC}{dt} = p\,Q\,C_{out}(t) - Q\,C(t) - \beta_{loss} V C(t) + E(t) \tag{3-7}$$
+
+Dividing by $V$ and substituting $\lambda = Q/V$:
+
+$$\frac{dC}{dt} = p\,\lambda\,C_{out}(t) - \lambda\,C(t) - \beta_{loss}\,C(t) + \frac{E(t)}{V} \tag{3-8}$$
 
 | Symbol | Description | Units |
 |---|---|---|
-| $C_{in}(t)$ | Indoor particle concentration (bin $k$) | #/cm³ |
-| $C_{out}(t)$ | Outdoor particle concentration (bin $k$) | #/cm³ |
-| $p$ | Penetration factor — fraction of outdoor particles penetrating the envelope per air change | — |
-| $\lambda$ | Air change rate (from CO₂ decay, Section 3.3) | h⁻¹ |
-| $\beta$ | Other process rate — net first-order indoor particle loss rate not attributable to ventilation | h⁻¹ |
-| $E$ | Shower aerosol emission rate (from bathroom into bedroom) | #/h |
-| $V$ | Bedroom volume | m³ (36.1 m³) |
+| $C(t)$ | Bedroom particle concentration, bin $k$ | # cm⁻³ |
+| $C_{out}(t)$ | Outdoor particle concentration, bin $k$ | # cm⁻³ |
+| $p$ | Penetration factor, fraction of outdoor particles crossing the envelope | dimensionless |
+| $\lambda$ | Air change rate from CO₂ decay (Section 3.3) | h⁻¹ |
+| $\beta_{loss}$ | First-order aerosol loss rate, surface deposition | h⁻¹ |
+| $E(t)$ | Shower aerosol emission rate into the bedroom | # h⁻¹ |
+| $V$ | Control volume | m³ |
+| $Q$ | Balanced airflow to and from outside the room | m³ h⁻¹ |
 
-The term $p \lambda C_{out}$ represents particle infiltration from outdoors; $\lambda C_{in}$ represents particle removal via exfiltration; $\beta C_{in}$ aggregates all additional first-order indoor loss processes (gravitational settling, inertial impaction on surfaces, thermophoresis, electrostatic deposition); and $E/V$ is the volumetric emission source from shower aerosol transported from the bathroom.
+Eq. (3-8) assumes all particle loss is first order and does not separate surface deposition from growth of particles into a larger bin. That second point matters: a negative $\beta_{loss}$ is physically interpretable here as net growth of smaller particles into the bin of interest, not as an error.
 
-Parameters $p$, $\beta$, and $E$ are estimated sequentially using distinct time windows from each event, described in Sections 3.4.3 through 3.4.5.
+$p$, $\lambda$, and $\beta_{loss}$ are determined first, then $E(t)$ is solved for.
 
-### 3.4.3 Penetration Factor ($p$)
+### 3.4.5 Penetration Factor
 
-The penetration factor was estimated from the ratio of indoor to outdoor particle concentration during periods with no shower emissions ($E = 0$) and with the indoor concentration approximately at quasi-steady state with respect to outdoor variability. At steady state, Eq. (3-7) yields $C_{in,ss}/C_{out} = p\lambda / (\lambda + \beta)$. Because $\beta \ll \lambda$ for fine particles and the ratio $\beta/\lambda$ is assumed to be small over the averaging window, $p$ is approximated as:
+One MODULAIR-PM (MOD-PM-00785) sat outdoors for the whole campaign, approximately 5 m from the north wall at 1.5 m above grade. Its concentrations define $C_{out}$.
 
-$$p \approx \frac{\overline{C_{in}}}{\overline{C_{out}}} \bigg|_{\text{background window}} \tag{3-8}$$
+The penetration factor is the average ratio of indoor to outdoor concentration over a quiet window with no shower emission, taken from 6 hours before shower start to 1 hour before shower start:
 
-Two 6-hour background windows were used — one before and one after the shower event — with boundaries determined by the time of day of the shower:
+$$p = \left. \frac{\overline{C(t)}}{\overline{C_{out}(t)}} \right|_{-6\,\text{h}}^{-1\,\text{h}} \tag{3-9}$$
 
-**Night events** (shower between 21:00 and 05:00):
+By definition $0 \leq p \leq 1$. Where the measured indoor concentration exceeded the outdoor concentration, $p$ is set to 1.
 
-| Window | Start | End |
-|---|---|---|
-| Before | 20:00 (previous day) | 02:00 (day of) |
-| After | 08:00 (day of) | 14:00 (day of) |
+Bins above 4.0 µm carry too few valid data for a penetration factor across most events.
 
-**Day events** (shower between 05:00 and 21:00):
+[CHECK: two different penetration windows are documented. Eq. (3-9) is the draft report's definition, a single window from 6 h to 1 h before the shower. The superseded `src/particle_calculations.py` uses paired 6-hour windows before and after the event, chosen by time of day (before 20:00 to 02:00 and after 08:00 to 14:00 for night events, the reverse for day events), averaged and then capped at 1.0. Confirm which window produced the reported penetration factors, and note that the reported table stops at 3.0 µm to 4.0 µm while this document's bin table runs to 10.0 µm.]
 
-| Window | Start | End |
-|---|---|---|
-| Before | 08:00 (day of) | 14:00 (day of) |
-| After | 20:00 (day of) | 02:00 (next day) |
+### 3.4.6 Aerosol Loss Rate
 
-"Day" was defined as 05:00–17:00 and "Night" as 17:00–05:00. This classification ensures that background windows bracket the shower event without overlapping the shower-on period or the subsequent 2-hour deposition window. Within each 6-hour window, all 1-minute time steps where either $C_{in}$ or $C_{out}$ was zero or negative were excluded. The window-average ratio $\overline{C_{in}} / \overline{C_{out}}$ was computed as the ratio of the window means (not the mean of per-step ratios). The final penetration factor for each event and bin was the arithmetic mean of the before and after window values, capped at 1.0 (passive infiltration cannot exceed unity):
+With the shower off there is no emission term, and Eq. (3-8) reduces to:
 
-$$p = \min\!\left(1.0,\; \frac{p_{before} + p_{after}}{2}\right) \tag{3-9}$$
+$$\frac{dC}{dt} = p\,\lambda\,C_{out}(t) - \lambda\,C(t) - \beta_{loss}\,C(t) \tag{3-10}$$
 
-A minimum of 10 valid data points per window was required. Events or bins with fewer than 10 points in either window were excluded from penetration factor estimation and from all downstream particle calculations.
+$\beta_{loss}$ is assumed constant through an event. Discretizing with a forward difference:
 
-### 3.4.4 Other Process Rate ($\beta$)
+$$\frac{C_{t_{i+1}} - C_t}{\Delta t} = p\,\lambda\,C_{out,t} - \lambda\,C_t - \beta_{loss}\,C_t \tag{3-11}$$
 
-The other process rate $\beta$ [h⁻¹] was estimated from the particle concentration decay in Bedroom #1 after the shower ended. During this deposition window ($E = 0$), Eq. (3-7) can be solved for $\beta$ at each 1-minute time step using a forward Euler discretization:
+and rearranging for the loss rate at each time step:
 
-$$\beta_t = \frac{C_t - C_{t+1}}{\Delta t \cdot C_t} + \frac{p \cdot \lambda \cdot C_{out,t}}{C_t} - \lambda \tag{3-10}$$
+$$\beta_{loss} = \frac{1}{\Delta t} - \lambda - \frac{C_{t_{i+1}}}{C_t\,\Delta t} + \frac{p\,\lambda\,C_{out,t}}{C_t} \tag{3-12}$$
 
-where $\Delta t = 1/60$ h (1-minute time step), and $C_t$ and $C_{t+1}$ are the measured indoor concentrations at consecutive minutes. Per-step $\beta_t$ values were collected over a 2-hour deposition window beginning at shower_off.
+Per-step values are averaged over 1 hour after shower off to 2 hours after shower off. That window is chosen deliberately: Section 3.4.3 shows the room reaches a near-uniform concentration only in the second hour, so the well-mixed assumption behind Eq. (3-10) holds there and not in the first hour.
 
-**Outlier removal.** Before aggregating the per-step estimates, a two-stage filter was applied:
+Two loss rates are computed per event, one from $\lambda_{out}$ giving $\beta_{loss,out}$ and one from $\lambda_{ent}$ giving $\beta_{loss,entry}$, so the λ bracket carries through.
 
-1. *Upper cap:* Per-step values $\beta_t > 5.0$ h⁻¹ were discarded. A value of 5 h⁻¹ corresponds to a particle half-life of approximately 8 minutes from deposition alone, which is physically unreasonable for particles smaller than ~3 µm; values above this threshold are attributed to noise spikes in the 1-minute concentration data.
+The loss rate is not computed when there is no air change rate for the event, or when the bin lacks continuous measurement for the full 2 hours after the shower. The second condition mostly affects bins above 3.0 µm.
 
-2. *Percentile trim:* From the remaining values, only those within the 5th–95th percentile range were retained (symmetric trim to remove asymmetric extreme residuals).
+Across events the loss rate runs roughly 5 to 10 times smaller than the air change rate. Some values are negative, which reflects growth of smaller particles into the bin of interest rather than a fitting failure.
 
-The trimmed mean of the retained $\beta_t$ values was taken as the candidate estimate.
+[CHECK: the draft report gives the mean $\beta_{loss,out}$ for the 0.66 µm to 1.0 µm bin as −0.13 h⁻¹ ± 0.4 h⁻¹, then gives $\beta_{loss,entry}$ as 0.93 h⁻¹ ± 0.89 h⁻¹, which is character for character the $\lambda_{ent}$ value stated two paragraphs earlier. One of the two is a copy-paste error. Confirm the real $\beta_{loss,entry}$.]
 
-**Four-step acceptance hierarchy.** An R²-based selection procedure then determined the final reported $\beta$. At each step, a forward Euler simulation of the deposition-window concentration time series was generated using the candidate $\beta$ (with $E = 0$), and the R² of the simulated versus measured concentration was computed. A threshold of R² ≥ 0.80 was required for acceptance at each step:
+### 3.4.7 Emission Rate
 
-| Step | Candidate $\beta$ | Accept if |
-|---|---|---|
-| (a) | Unclamped trimmed mean (may be negative) | Forward Euler R² ≥ 0.80 |
-| (b) | Clamp to $\beta \geq 0$ | Forward Euler R² ≥ 0.80 |
-| (c) | Set $\beta = 0$ (no net deposition) | Forward Euler R² ≥ 0.80 |
-| (d) | Neither positive nor zero β achieves R² ≥ 0.80 | $\beta = \text{NaN}$ (bin invalid) |
+Solving Eq. (3-8) for the emission term at each time step:
 
-The hierarchy proceeds in order: a step is accepted if its R² meets the threshold, and subsequent steps are skipped. The rationale for each step follows from physical arguments: step (a) accepts the unconstrained best-fit value when it adequately reproduces the decay; step (b) accepts a non-negative deposition rate when the unconstrained estimate is slightly negative (physically: near-zero net loss) but still fits the data; step (c) accepts the limiting case of no net deposition when neither positive nor negative β is warranted by the data; step (d) declares the bin invalid when no reasonable β value reproduces the measured decay, and the bin is excluded from all downstream reporting.
+$$E_t = p\,\lambda\,V\,C_{out,t} + \frac{V\left(C_t - C_{t_{i+1}}\right)}{\Delta t} - \lambda\,V\,C_t - \beta_{loss}\,V\,C_t \tag{3-13}$$
 
-This hierarchy avoids a systematic visual artifact present in simpler implementations: when $\beta$ is forced to zero, the forward Euler simulation rises toward the outdoor steady-state concentration $p \cdot C_{out}$ once the indoor concentration decays below this level, creating a spurious step-change in the predicted time series. By allowing NaN (step d) rather than forcing $\beta = 0$ in all cases, invalid bins are clearly identified and not misrepresented by a model that does not fit the data.
+$E_t$ is computed from shower on until the concentration in the bin first falls below the previous time step, that is, over the rising limb only. The average over those $n$ rising steps is:
 
-A minimum of 10 valid time steps in the deposition window was required. Bins with fewer than 10 valid steps were excluded.
+$$E_{average} = \Delta t \cdot \frac{E_{t_i} + E_{t_{i+1}} + \dots + E_{t_n}}{n} \tag{3-14}$$
 
-### 3.4.5 Emission Rate ($E$)
+[CHECK: Eq. (3-14) as written in the draft report multiplies a mean rate by a single time step, so with $E_t$ in # h⁻¹ the result carries units of particles, not particles per hour. Either the $\Delta t$ factor does not belong and the quantity is a mean rate, or the $1/n$ does not belong and the quantity is a time-integrated total. Confirm which is intended and correct the equation and the axis labels together.]
 
-The shower aerosol emission rate $E$ [#/h] was estimated over the period from shower onset to the time of peak indoor particle concentration in the bedroom. During this emission window, $p$, $\lambda$, and $\beta$ are held constant at the values estimated above, and Eq. (3-7) is rearranged to solve for $E_t$ at each 1-minute time step:
+**Eight emission variants.** Rather than commit to a single set of inputs, eight emission rates are computed per bin per event from the combinations in Table 3-1. The maximum and minimum $E_{average}$ across the eight are the values presented in the results figures, so the reported emission rate is an interval rather than a point estimate.
 
-$$E_t = V \left[\frac{C_{t+1} - C_t}{\Delta t} + (\lambda + \beta) \cdot C_t - p \cdot \lambda \cdot C_{out,t}\right] \tag{3-11}$$
+**Table 3-1. Input combinations for the eight emission calculations.**
 
-Per-step values $E_t$ were computed for all time steps from shower_on to the concentration peak. Negative values of $E_t$ can arise from short-term concentration decreases within the emission window and were retained in the time series for visualization but excluded from the mean and median calculations; only positive values contributed to the reported statistics $E_{mean}$ and $E_{median}$.
+| Parameter | | E₁ | E₂ | E₃ | E₄ | E₅ | E₆ | E₇ | E₈ |
+|---|---|---|---|---|---|---|---|---|---|
+| Air change rate | λ_entry | X | X | X | X | | | | |
+| | λ_out | | | | | X | X | X | X |
+| Aerosol loss rate | β_loss,entry | X | X | X | X | | | | |
+| | β_loss,out | | | | | X | X | X | X |
+| Concentration | C_room(t) | X | X | | | X | X | | |
+| | C_adjusted room(t) | | | X | X | | | X | X |
+| Volume | 35.9 m³ | X | | X | | X | | X | |
+| | 54.6 m³ | | X | | X | | X | | X |
 
-The total particle quantity delivered to the bedroom during the emission phase was estimated by trapezoidal integration:
+The two concentration series are alternatives only for events with a single monitor. For events with nine or more monitors, $C_{room}$ is used and the variant count halves. The larger volume includes the bathroom inside the mass balance control volume; the smaller is the bedroom alone.
 
-$$E_{total} = \int_{t_{on}}^{t_{peak}} \max(E_t,\, 0)\, dt \approx \sum_i \max(E_{t_i},\, 0) \cdot \Delta t \tag{3-12}$$
+[CHECK: neither volume appears in this repository. `src/particle_calculations.py` carries `BEDROOM_VOLUME_M3 = 36.1`, annotated as 36.10859771 m³ from CAD, against the report's 35.9 m³. The 54.6 m³ combined volume has no stated derivation anywhere. Confirm both, and state whether 54.6 m³ accounts for the shower enclosure and the bathroom's own ceiling height.]
 
-where negative per-step values were clipped to zero before summation. A minimum of 3 valid time steps in the emission window was required; bins with fewer than 3 steps were excluded from emission estimation.
-
-### 3.4.6 Predicted Concentration Time Series
-
-A forward Euler simulation of the bedroom particle concentration was generated for each valid event–bin combination, spanning from shower onset through the end of the deposition window (shower_on to shower_off + 2 h). The simulation used a 1-minute time step and was divided into two sequential phases:
-
-**Emission phase** (shower_on to peak_time): $E_t = E_{mean}$ (constant, mean of positive per-step values from Section 3.4.5).
-
-$$C_{t+1} = C_t + \Delta t \left(p \cdot \lambda \cdot C_{out,t} - \lambda \cdot C_t - \beta \cdot C_t + \frac{E_{mean}}{V}\right) \tag{3-13}$$
-
-**Deposition phase** (peak_time to shower_off + 2 h): $E_t = 0$.
-
-$$C_{t+1} = C_t + \Delta t \left(p \cdot \lambda \cdot C_{out,t} - \lambda \cdot C_t - \beta \cdot C_t\right) \tag{3-14}$$
-
-The deposition phase simulation was initialized from the *simulated* (not measured) peak concentration, isolating any mismatch between the emission phase model and the measured peak from the deposition phase comparison. The R² of the emission phase simulation versus measured concentrations from shower_on to peak_time was computed as a diagnostic of emission phase fidelity.
+[CHECK: no script in this repository computes Eq. (3-13), Eq. (3-14), or Table 3-1. Confirm where the eight emission variants are calculated so the code can be brought into the repository or the external tool can be cited.]
 
 ---
 
 ## 3.5 Environmental Conditions Analysis
 
-### 3.5.1 Pre- and Post-Shower Analysis Windows
+### 3.5.1 Pre- and Post-Shower Windows
 
-Environmental sensor data (RH, temperature, wind) were summarized over two time windows relative to each shower event:
+`scripts/rh_temp_other_analysis.py` summarizes RH, temperature, and wind over two windows per event:
 
-- **Pre-shower baseline:** 30 minutes immediately before shower onset (shower_on − 30 min to shower_on).
-- **Post-shower response:** 2 hours after shower offset (shower_off to shower_off + 2 h).
+- **Pre-shower baseline:** 30 minutes before shower onset (`PRE_SHOWER_MINUTES = 30`).
+- **Post-shower response:** 2 hours after shower offset (`POST_SHOWER_HOURS = 2`).
 
-These window lengths are consistent with the particle deposition analysis window, allowing direct comparison of environmental conditions to aerosol transport behavior. Mean and standard deviation were computed for each sensor over each window.
+Mean and standard deviation are computed per sensor per window. The post-shower window matches the aerosol deposition window, so environmental conditions and aerosol behavior can be compared directly.
 
-### 3.5.2 Bedroom Reference Conditions
+### 3.5.2 Onset and Decay Windows
 
-To characterize the pre-shower indoor environment for use in boxplot annotations and environmental stratification analyses, bedroom RH and temperature for each event were computed from the following five sensor channels:
+`scripts/hobo_onset_decay_figures.py` uses the same two windows as the C_bed1 to C_room scatter in Section 3.4.3, so that HOBO temperature and RH can be read against the aerosol uniformity result:
 
-- Vaisala HMP155 Bed1 (RH and temperature)
-- HOBO UX100 MB_Bed / Bedroom1 (RH and temperature)
-- HOBO UX100 MB_F / Bedroom2 (RH and temperature)
-- HOBO UX100 MB_C / Bedroom3 (RH and temperature)
-- Aranet4 Bedroom (RH and temperature)
+- **onset:** shower_on to shower_on + 60 min, inclusive
+- **decay:** shower_off + 60 min to shower_off + 120 min, inclusive
 
-The QuantAQ MODULAIR-PM `met_rh` and `met_temp` channels were explicitly excluded from all bedroom environmental characterization; these channels reflect conditions within the instrument's internal flow cell and are not representative of ambient room air.
+Only HOBO measurements falling inside an onset or decay window of some event are retained, over 2026-01-15 00:00 to 2026-07-16 23:59:59. Onset points are drawn as circles and decay points as squares, one color per sensor.
 
-Mean and standard deviation of RH [%] and temperature [°C] across the five sensors were calculated over the 30-minute pre-shower baseline window. Combined uncertainty was estimated as:
+Sensor display labels follow the report section and intentionally differ from the loader room configuration for MB_E; see the CHECK in Section 2.5.3.
+
+### 3.5.3 Paired Pre and Post Change
+
+A second figure pair reduces each event to two points: the pooled mean across all five HOBO sensors' raw points in the 30-minute pre window and in the 2-hour post window, with pooled standard deviation whiskers, plotted at the window midpoints and colored by window.
+
+Below each figure, a summary reports the paired change from pre to post: the mean difference and standard deviation across all events with data in both windows, and a paired t-test (`scipy.stats.ttest_rel`) of post against pre. The t statistic and p value are reported as NaN when fewer than two events qualify.
+
+The pairing matters. Each event is its own control, so the test measures the within-event shift caused by the shower rather than the between-event variation caused by the room warming from January to July.
+
+### 3.5.4 Bedroom Reference Conditions
+
+For boxplot annotations and environmental stratification, bedroom RH and temperature per event are computed from five channels: Vaisala HMP155 Bed1, HOBO MB_Bed, HOBO MB_F, HOBO MB_C, and Aranet4 Bedroom.
+
+The MODULAIR-PM `met_rh` and `met_temp` channels are excluded from all bedroom characterization. They read the instrument's internal flow cell, not room air.
+
+Mean and standard deviation across the five sensors are computed over the 30-minute pre-shower window, with combined uncertainty estimated as:
 
 $$u_{RH} = \frac{1.96\,\sigma_{RH}}{\sqrt{n}} \tag{3-15}$$
 
-where $\sigma_{RH}$ is the sample standard deviation across the $n$ available sensors and 1.96 is the 97.5th percentile of the standard normal distribution (approximate 95 % confidence interval). An analogous expression applies to temperature. These bedroom conditions are tabulated in the `Bedroom_Conditions` sheet of `rh_temp_wind_summary.xlsx` and are exempt from the significant-figure rounding described in Section 3.7.1.
+where $\sigma_{RH}$ is the sample standard deviation across the $n$ available sensors and 1.96 is the 97.5th percentile of the standard normal distribution. Temperature is treated identically. These values are written to the `Bedroom_Conditions` sheet of `rh_temp_wind_summary.xlsx` and are exempt from the significant-figure rounding in Section 3.7.1.
 
-### 3.5.3 Sensors Excluded from RH Time-Series Figures
+### 3.5.5 Sensors Excluded from RH Time-Series Figures
 
-For event-level RH time-series figures, sensors with limited spatial relevance to the bathroom–bedroom aerosol pathway were omitted to reduce visual clutter:
-
-- Vaisala MBa RH (Bathroom #1, HMP45A)
-- Vaisala Liv RH (Living room, HMP155)
-- Aranet4 Entry RH
-- Aranet4 Outside RH
-- AIO2 outdoor RH (Met One weather station)
-
-These sensors remain available in the full summary tables and in analyses requiring complete spatial coverage of the home.
+For event-level RH time-series figures, sensors with limited relevance to the bathroom-to-bedroom pathway are omitted to reduce clutter: Vaisala MBa RH, Vaisala Liv RH, Aranet4 Entry RH, Aranet4 Outside RH, and AIO2 outdoor RH. All remain in the full summary tables.
 
 ---
 
@@ -299,26 +387,31 @@ These sensors remain available in the full summary tables and in analyses requir
 
 ### 3.6.1 Consolidated Exclusion Criteria
 
-Table 3-1 consolidates all exclusion criteria applied across the three analysis domains, together with the resulting disposition of excluded data.
+**Table 3-2. Exclusion criteria across all analysis domains.**
 
-**Table 3-1. Summary of event and bin-level exclusion criteria.**
-
-| Criterion | Applied at | Disposition of excluded data |
+| Criterion | Applied at | Disposition |
 |---|---|---|
 | Shower duration outside 10.0 min ± 5 s | All analysis | `is_excluded = True`; `event_number = NaN`; retained in registry |
-| Predefined individual event exclusions (4 events) | All analysis | `is_excluded = True`; retained in registry |
-| Predefined date range exclusions (4 ranges) | All analysis | `is_excluded = True`; retained in registry |
-| Initial CO₂ concentration excess < 50 ppm | CO₂ decay (λ) | Event excluded from λ analysis only |
-| CO₂ decay regression R² < 0.75 | Particle analysis (λ input) | CO₂ result retained; event excluded from particle analysis |
-| QuantAQ bedroom RH peak outside first 45 min of deposition window | Particle analysis | Event excluded from particle analysis |
-| Penetration window: fewer than 10 valid data points | Penetration factor ($p$) | Bin excluded; $p = $ NaN; no downstream analysis |
-| Deposition window: fewer than 10 valid data points after upper-cap filter | Other process rate ($\beta$) | Bin excluded; $\beta = $ NaN; no Ct prediction |
-| Emission window: fewer than 3 valid positive time steps | Emission rate ($E$) | Bin excluded from $E$ reporting; Ct prediction unaffected |
-| $\beta$ = NaN after 4-step selection (all steps fail R² ≥ 0.80) | All particle parameters | Bin invalid; no Ct prediction; rendered faded/dashed in figures |
+| Four predefined individual events | All analysis | `is_excluded = True`; retained in registry |
+| Four predefined date ranges | All analysis | `is_excluded = True`; retained in registry |
+| Initial CO₂ concentration excess below 50 ppm | CO₂ decay (λ) | Event excluded from λ only |
+| CO₂ decay regression R² below 0.65 | Aerosol analysis | CO₂ result retained; event excluded from aerosol analysis |
+| Fewer than nine fleet monitors reporting at a minute | C_room | Minute dropped; no partial-fleet average |
+| Monitor not yet installed at event time | Fleet per-sensor exports and delta peak times | That monitor blank for that event; other monitors unaffected |
+| No continuous measurement over the 2 h after shower off | Aerosol loss rate | Bin excluded; primarily affects bins above 3.0 µm |
+| No air change rate for the event | Aerosol loss rate and emission rate | Both excluded |
+
+Two monitor-level exclusions are permanent rather than per-event. MOD-PM-00401 reads exactly zero for roughly 90 % of the fleet window and is dropped from the per-bin time series and flagged in the delta-peak output. MOD-PM-00555 is in the bathroom and is excluded from the C_mid zone average.
 
 ### 3.6.2 Flow Rate Filter for Summary Figures
 
-For summary boxplots and categorical comparison figures, events with measured water flow rates outside the standard range of 4.1–5.6 L/min were excluded to avoid confounding shower head type or water temperature effects with flow rate variability. This filter does not affect per-event time-series figures or the event registry.
+For summary boxplots and categorical comparisons, events with measured flow outside 4.1 L min⁻¹ to 5.6 L min⁻¹ are excluded, so that head type or water temperature effects are not confounded with flow rate. The filter does not affect per-event time-series figures or the event registry.
+
+`scripts/export_config_timeseries_fleet.py` treats flow differently on purpose: standard flow and 4.1 L min⁻¹ to 5.6 L min⁻¹ tagged events are pooled under the base configuration key, while restricted-flow events are reported as separate groups.
+
+### 3.6.3 Registry Exclusion Flag and the Fleet Exports
+
+The registry `is_excluded` flag is no longer applied to the MODULAIR-PM configuration exports. Excluded events still appear in those workbooks. The exports are a data product for inspection rather than a summary statistic, and dropping events silently made gaps hard to distinguish from missing data.
 
 ---
 
@@ -326,38 +419,81 @@ For summary boxplots and categorical comparison figures, events with measured wa
 
 ### 3.7.1 Significant Figures
 
-Numerical results are reported to three significant figures in all data output files (CSV and Excel workbooks) and to two significant figures in figure annotations (axis tick labels, in-figure text boxes, legend entries). These conventions are applied programmatically through a project-wide significant figures utility module (`src/sig_figs.py`). Full-precision (unrounded) output can be obtained by invoking any analysis script with the `--no-sig-figs` command-line flag. The `Bedroom_Conditions` sheet of `rh_temp_wind_summary.xlsx` is exempt from rounding and is always written at full precision.
+Numerical results are reported to three significant figures in data output files and to two in figure annotations, applied programmatically through `src/sig_figs.py`. Full precision is available by passing `--no-sig-figs` to any analysis script. The `Bedroom_Conditions` sheet of `rh_temp_wind_summary.xlsx` is exempt and is always written at full precision.
 
 ### 3.7.2 Summary Statistics
 
-Unless otherwise stated in a figure caption or table header, summary statistics are defined as follows:
+Unless a figure caption or table header says otherwise:
 
 - **Mean:** arithmetic mean across replicate events within a configuration, or across configurations within a water temperature group.
-- **Standard deviation:** sample standard deviation (divisor $n - 1$).
-- **Uncertainty bars in figures:** ±1.96 × standard error of the mean (approximately 95 % confidence interval, assuming approximate normality; reported alongside the mean).
-- **Boxplots:** center line = median; box edges = 25th and 75th percentiles (interquartile range, IQR); whiskers extend to the most extreme observation within 1.5 × IQR of the nearest box edge; individual observations beyond the whiskers are plotted as open circles.
+- **Standard deviation:** sample standard deviation, divisor $n - 1$.
+- **Uncertainty bars:** ±1.96 × standard error of the mean, an approximate 95 % confidence interval assuming approximate normality.
+- **Boxplots:** center line is the median; box edges are the 25th and 75th percentiles; whiskers reach the most extreme observation within 1.5 × IQR of the nearest box edge; observations beyond the whiskers are plotted as open circles.
+- **Standard deviation bands on aligned time series:** drawn only at minutes where at least three events contribute.
 
-Water temperature groupings in boxplots include only events from baseline configurations (standard nominal flow rate, no mannequin, standard door and fan positions) for each water temperature code (W##), unless the figure title or caption states otherwise. Variant runs (e.g., spray pattern or mannequin experiments conducted at W40) are included only in the categorical comparison figures specific to those variables.
+Water temperature groupings in boxplots include only baseline configurations, meaning standard nominal flow rate, no mannequin, and standard door and fan positions, unless stated otherwise. Variant runs conducted at W40 appear only in the categorical comparison figures specific to those variables.
 
-### 3.7.3 Output File Structure
+### 3.7.3 Output Files
 
-Principal output files generated by each analysis script are listed in Table 3-2.
+**Table 3-3. Principal analysis outputs, current pipeline.**
 
-**Table 3-2. Principal analysis output files.**
-
-| Script | Output file | Contents |
+| Script | Output | Contents |
 |---|---|---|
-| `event_registry.py` | `event_log.csv` | Event registry: all events with numbers, test names, λ, exclusion flags |
-| `co2_decay_analysis.py` | `co2_lambda_summary.csv` | Per-event λ (all three source methods), R², decay window details |
-| `co2_decay_analysis.py` | `co2_lambda_overall_summary.csv` | Aggregated λ statistics by configuration |
-| `co2_decay_analysis.py` | `plots/event_figures/co2_decay/event_NN-*.png` | Per-event CO₂ concentration and decay fit plots |
-| `co2_decay_analysis.py` | `plots/air_change_rate_boxplot.png` | λ by water temperature (baseline configurations) |
-| `particle_decay_analysis.py` | `particle_analysis_summary.xlsx` | Multi-sheet workbook: all_results, penetration, beta, emission, totals, peak comparison |
-| `particle_decay_analysis.py` | `plots/event_figures/pm_decay/event_NN-*.png` | Per-event 4-panel particle figures (concentration + 3 emission panels) |
-| `particle_decay_analysis.py` | `plots/*_boxplot_{bin0-2,bin3-6,bin7-11}.png` | Categorical boxplots (water temp, RH, ACR, β, p, head type, spray, door, fan, mannequin) |
-| `rh_temp_other_analysis.py` | `rh_temp_wind_summary.xlsx` | Multi-sheet summary: RH, Temp, Wind statistics; Bedroom_Conditions; Event_Log |
-| `rh_temp_other_analysis.py` | `plots/event_figures/rh_timeseries/event_NN-*.png` | Per-event RH time-series figures |
-| `rh_temp_other_analysis.py` | `plots/event_figures/temperature_timeseries/event_NN-*.png` | Per-event temperature time-series figures |
-| `rh_temp_other_analysis.py` | `plots/event_figures/wind_timeseries/event_NN-*.png` | Per-event wind speed and direction figures |
-| `export_event_timeseries.py` | `output/event_N_timeseries.xlsx` | Single-event predicted $C_t$ and measured $C_{in}$ for all bins |
-| `export_config_timeseries.py` | `output/event_config_timeseries.xlsx` | 1-min average time series per configuration group across replicates |
+| `event_registry.py` | `event_log.csv` | Event registry: numbers, test names, λ, exclusion flags |
+| `co2_decay_analysis.py` | `co2_lambda_summary.csv` | Per-event λ for all three source methods, R², window details |
+| `co2_decay_analysis.py` | `co2_lambda_overall_summary.csv` | λ statistics aggregated by configuration |
+| `co2_decay_analysis.py` | `plots/event_figures/co2_decay/event_NN-*.png` | Per-event CO₂ concentration and decay fit |
+| `co2_decay_analysis.py` | `plots/air_change_rate_boxplot.png` | λ by water temperature, baseline configurations |
+| `moduair_correction_factor.py` | `moduair_correction_195_813_fit_jun04_jul16.csv` | Per-bin Deming fit of 813 against 195: slope, intercept, standard errors |
+| `moduair_correction_factor.py` | `moduair_correction_factor_ratios_jun04_jul16.csv` | The three diagnostic ratios per bin |
+| `moduair_correction_factor.py` | `moduair_correction_factor_summary_jun04_jul16.csv` | Ratio summary statistics |
+| `moduair_correction_factor.py` | `plots/moduair_correction/jun04_jul16/correction_factor_bin{N}.html` | Three ratios per bin on shared axes |
+| `moduair_cave_ratio.py` | `moduair_room_ratio_fit.csv` | Per-bin C_bed1 against C_room Deming fit |
+| `moduair_cave_ratio.py` | `moduair_room_ratio_fit_w38_w41.csv` | Per-bin fit split by onset and decay window |
+| `moduair_cave_ratio.py` | `plots/moduair_room/c_bed1_vs_c_room_bin{N}[_onset\|_decay].html` | Scatter with Deming fit and 1:1 line |
+| `moduair_cave_ratio.py` | `plots/moduair_room/c_bed1_c_room_ratio_time_bin{N}.html` | Ratio against aligned time by temperature group |
+| `moduair_bin2_timeseries.py` | `plots/moduair_correction/bin{0-10}_timeseries.html` | Fleet concentration per bin with C_room overlay |
+| `moduair_event_peak_times.py` | `moduair_event_peak_times.csv` | Event by monitor delta peak time, minutes |
+| `moduair_event_peak_times.py` | `plots/moduair_correction/event_delta_peak_times.html` | Delta peak time figure |
+| `export_config_timeseries_fleet.py` | `output/event_config_timeseries_fleet/MOD-PM-<sn>/*.xlsx` | Per-monitor aggregated and raw config time series |
+| `export_config_timeseries_fleet.py` | `output/event_config_timeseries_fleet/C_room/*.xlsx` | C_room aggregated and raw config time series |
+| `export_config_timeseries.py` | `output/event_config_timeseries.xlsx` | Single-sensor 1-min config time series |
+| `export_event_timeseries.py` | `output/event_N_timeseries.xlsx` | Single-event predicted and measured concentration, all bins |
+| `rh_temp_other_analysis.py` | `rh_temp_wind_summary.xlsx` | RH, temperature, wind statistics; `Bedroom_Conditions`; `Event_Log` |
+| `rh_temp_other_analysis.py` | `plots/event_figures/{rh,temperature,wind}_timeseries/event_NN-*.png` | Per-event environmental figures |
+| `hobo_onset_decay_figures.py` | `output/plots/hobo/hobo_{temp,rh}_onset_decay.html` | HOBO onset and decay scatter |
+| `hobo_onset_decay_figures.py` | `output/plots/hobo/hobo_{temp,rh}_pre_post.html` | Paired pre and post per event with t-test summary |
+
+The fleet exports cover events whose shower_on falls in 2026-06-03 through 2026-07-16, with per-monitor install gating. The C_room pass uses the full window event set with no gating, since a not-yet-installed monitor is simply absent from the reporting count at those minutes.
+
+---
+
+## 3.8 Superseded Single-Sensor Pipeline
+
+`scripts/particle_decay_analysis.py`, with the calculation functions in `src/particle_calculations.py`, implements the aerosol mass balance as it stood before the fleet was installed. It is retained because older figures reference its outputs, and is recorded here so those figures can be dated correctly. It is not the basis of the draft report.
+
+It differs from Sections 3.4.4 to 3.4.7 in five ways:
+
+1. One air change rate, $\lambda_{avg}$, rather than the $\lambda_{out}$ and $\lambda_{ent}$ bracket.
+2. One control volume, `BEDROOM_VOLUME_M3 = 36.1`, rather than 35.9 m³ and 54.6 m³.
+3. Measured $C_{in}$ from MOD-PM-00195 alone, with no C_room and no adjustment.
+4. Penetration from paired 6-hour windows before and after the event, chosen by time of day, averaged and capped at 1.0, rather than a single 6 h to 1 h pre-shower window.
+5. $\beta$ from a trimmed mean over the full 2-hour post-shower window with a 5.0 h⁻¹ upper cap and a 5th to 95th percentile trim, then a four-step acceptance hierarchy testing forward Euler R² ≥ 0.80 against the unclamped mean, then a non-negative clamp, then $\beta = 0$, then NaN. The current approach instead restricts the average to the second hour, where Section 3.4.3 shows the room is near-uniform, and admits negative values as particle growth.
+
+Its principal output is `particle_analysis_summary.xlsx`.
+
+---
+
+## 3.9 Divergence Between This Repository and the Draft Report
+
+Three parts of the draft report's analysis are not implemented by any script here. They are listed together so they can be resolved as one decision rather than found one at a time.
+
+| Report element | Where it appears | Status in this repository |
+|---|---|---|
+| $C_{adjusted\,room}(t)$, Eq. (3-6), and its temperature-banded application | Report Section 3.3.2, Equation 2 | Ratio curves are produced by `moduair_cave_ratio.py`; nothing consumes them to build the adjusted series |
+| Eight emission variants, Table 3-1, and Eq. (3-13) and (3-14) | Report Section 3.3.2, Table 6 and Equations 10 and 11 | Not implemented anywhere |
+| Control volumes 35.9 m³ and 54.6 m³ | Report Section 3.3.2, Table 6 | Only `BEDROOM_VOLUME_M3 = 36.1` exists |
+
+Applying the 195 correction from Section 3.4.2 is a fourth case: the per-bin Deming fit is produced, but no script applies it to the historical record.
+
+Resolving these means either bringing the calculation into this repository, or citing the external tool that performs it and archiving its inputs and outputs alongside the code.
