@@ -328,6 +328,7 @@ def make_figure(df: pd.DataFrame, output_path: Path) -> None:
 
     # Shared MODULAIR style: 1600x800, 12pt, no title, click-to-hide legend.
     style_moduair_figure(fig, legend_title="Source", legend_location=LEGEND_LOCATION)
+    fig.y_range.start = 0
 
     fig.xaxis.formatter = DatetimeTickFormatter(
         days="%Y-%m-%d", hours="%m-%d %H:%M", minutes="%H:%M"
