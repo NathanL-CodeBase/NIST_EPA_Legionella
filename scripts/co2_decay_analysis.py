@@ -155,6 +155,9 @@ ROLLING_WINDOW_MIN = 6  # Rolling average window (minutes)
 # Minimum concentration difference for valid analysis (ppm)
 MIN_CONCENTRATION_DIFF = 50  # C_bedroom - C_source must exceed this
 
+# Minimum R² for an accepted λ fit; fits below this are rejected as NaN
+MIN_R_SQUARED = 0.75
+
 
 # =============================================================================
 # Data Loading Functions
@@ -172,7 +175,7 @@ def load_aranet_file(filepath: Path) -> pd.DataFrame:
         pd.DataFrame: DataFrame with parsed datetime index
     """
     # Handle both Excel and CSV files
-    if filepath.suffix.lower() == '.csv':
+    if filepath.suffix.lower() == ".csv":
         df = pd.read_csv(filepath)
     else:
         df = pd.read_excel(filepath)
@@ -313,9 +316,7 @@ def load_and_merge_co2_data() -> pd.DataFrame:
     for col in co2_cols:
         if col in merged.columns:
             merged[col] = (
-                merged[col]
-                .rolling(window=ROLLING_WINDOW_MIN, center=False, min_periods=1)
-                .mean()
+                merged[col].rolling(window=ROLLING_WINDOW_MIN, center=False, min_periods=1).mean()
             )
 
     merged = merged.reset_index()
@@ -527,14 +528,10 @@ def get_events_from_registry(output_dir: Path) -> tuple:
             # Compute decay_start as shower_on + DECAY_START_AFTER_SHOWER_ON_MIN
             shower_on_val = row.get("shower_on")
             shower_on_dt = (
-                pd.to_datetime(shower_on_val, errors="coerce")
-                if pd.notna(shower_on_val)
-                else None
+                pd.to_datetime(shower_on_val, errors="coerce") if pd.notna(shower_on_val) else None
             )
             if shower_on_dt is not None and not pd.isnull(shower_on_dt):
-                decay_start = shower_on_dt + timedelta(
-                    minutes=DECAY_START_AFTER_SHOWER_ON_MIN
-                )
+                decay_start = shower_on_dt + timedelta(minutes=DECAY_START_AFTER_SHOWER_ON_MIN)
                 decay_end = decay_start + timedelta(hours=DECAY_DURATION_HOURS)
             else:
                 decay_start = None
@@ -551,14 +548,10 @@ def get_events_from_registry(output_dir: Path) -> tuple:
                     "mannequin": row.get("mannequin", False),
                     "time_of_day": row.get("time_of_day", ""),
                     "shower_on": shower_on_dt,
-                    "shower_off": pd.to_datetime(
-                        row.get("shower_off", pd.NaT), errors="coerce"
-                    )
+                    "shower_off": pd.to_datetime(row.get("shower_off", pd.NaT), errors="coerce")
                     if pd.notna(row.get("shower_off", pd.NaT))
                     else None,
-                    "injection_start": pd.to_datetime(
-                        row["co2_injection_start"], errors="coerce"
-                    )
+                    "injection_start": pd.to_datetime(row["co2_injection_start"], errors="coerce")
                     if pd.notna(row["co2_injection_start"])
                     else None,
                     "injection_end": pd.to_datetime(
@@ -755,8 +748,19 @@ def calculate_lambda_analytical(
             "r_squared": r_squared,
             "n_points": n,
             "skip_reason": (
-                f"Unreasonable λ value: {lambda_value:.4f} h⁻¹ "
-                f"(expected 0 < λ < 10 h⁻¹)"
+                f"Unreasonable λ value: {lambda_value:.4f} h⁻¹ (expected 0 < λ < 10 h⁻¹)"
+            ),
+        }
+
+    # Reject poor fits below the R² threshold      <-- INSERT HERE
+    if (not np.isfinite(r_squared)) or (r_squared < MIN_R_SQUARED):
+        return {
+            "lambda_mean": np.nan,
+            "lambda_std": np.nan,
+            "r_squared": r_squared,
+            "n_points": n,
+            "skip_reason": (
+                f"R² below threshold ({source_mode}): {r_squared:.4f} < {MIN_R_SQUARED}"
             ),
         }
 
@@ -801,6 +805,7 @@ def analyze_injection_event(
     """
     result = {
         "event_number": event.get("event_number", None),
+        "shower_on": event.get("shower_on"),
         "injection_start": event["injection_start"],
         "decay_start": event["decay_start"],
         "decay_end": event["decay_end"],
@@ -820,8 +825,7 @@ def analyze_injection_event(
 
         result[f"lambda_{mode}_mean"] = lambda_result["lambda_mean"]
         result[f"lambda_{mode}_std"] = lambda_result["lambda_std"]
-        if mode == "average":
-            result["lambda_average_r_squared"] = lambda_result.get("r_squared", np.nan)
+        result[f"lambda_{mode}_r_squared"] = lambda_result.get("r_squared", np.nan)
         result[f"lambda_{mode}_n_points"] = lambda_result["n_points"]
 
         if mode == "average":
@@ -890,7 +894,11 @@ def plot_air_change_rate_boxplot(
     # Water temps are now always pure W## so filtering must use config_key
     # (or shower_head column) to exclude Pepco and mannequin events.
     def _is_base_config_for_acr(key: str) -> bool:
-        return bool(re.match(r"^W\d+(_|$)", str(key))) and "_Pepco" not in str(key) and "_Mannequin" not in str(key)
+        return (
+            bool(re.match(r"^W\d+(_|$)", str(key)))
+            and "_Pepco" not in str(key)
+            and "_Mannequin" not in str(key)
+        )
 
     def _extract_temp(wt: str) -> "float | None":
         m = re.match(r"^W(\d+)", str(wt))
@@ -1188,9 +1196,7 @@ def run_co2_decay_analysis(
                 print(
                     f"\n  WARNING: No shower match for CO2 event #{event.get('event_number', '?')}"
                 )
-                print(
-                    f"    CO2 injection time: {injection_time.strftime('%Y-%m-%d %H:%M')}"
-                )
+                print(f"    CO2 injection time: {injection_time.strftime('%Y-%m-%d %H:%M')}")
                 print(
                     f"    Expected shower time: {expected_shower_time.strftime('%Y-%m-%d %H:%M')} (±10 min)"
                 )
@@ -1202,8 +1208,7 @@ def run_co2_decay_analysis(
                         shower_time = se.get("shower_on")
                         if shower_time:
                             diff_min = abs(
-                                (shower_time - expected_shower_time).total_seconds()
-                                / 60.0
+                                (shower_time - expected_shower_time).total_seconds() / 60.0
                             )
                             if diff_min < nearest_diff:
                                 nearest_diff = diff_min
@@ -1252,6 +1257,7 @@ def run_co2_decay_analysis(
             # Add to results as skipped
             result = {
                 "event_number": event_num,
+                "shower_on": event.get("shower_on"),
                 "test_name": test_name,
                 "config_key": config_key,
                 "water_temp": water_temp,
@@ -1261,18 +1267,18 @@ def run_co2_decay_analysis(
                 "injection_start": injection_time,
                 "decay_start": event["decay_start"],
                 "decay_end": event["decay_end"],
-                "decay_duration_hours": event.get(
-                    "decay_duration_hours", DECAY_DURATION_HOURS
-                ),
+                "decay_duration_hours": event.get("decay_duration_hours", DECAY_DURATION_HOURS),
                 "lambda_average_mean": np.nan,
                 "lambda_average_std": np.nan,
                 "lambda_average_r_squared": np.nan,
                 "lambda_average_n_points": 0,
                 "lambda_outside_mean": np.nan,
                 "lambda_outside_std": np.nan,
+                "lambda_outside_r_squared": np.nan,
                 "lambda_outside_n_points": 0,
                 "lambda_entry_mean": np.nan,
                 "lambda_entry_std": np.nan,
+                "lambda_entry_r_squared": np.nan,
                 "lambda_entry_n_points": 0,
                 "skip_reason": f"Excluded: {exclusion_reason}",
             }
@@ -1285,10 +1291,7 @@ def run_co2_decay_analysis(
                 excluded_dir = get_event_figures_subdir(output_dir, "excluded_events")
                 excluded_dir.mkdir(parents=True, exist_ok=True)
                 formatted_name = format_test_name_for_filename(test_name)
-                plot_path = (
-                    excluded_dir
-                    / f"event_{event_num:02d}-{formatted_name}_co2_decay.png"
-                )
+                plot_path = excluded_dir / f"event_{event_num:02d}-{formatted_name}_co2_decay.png"
                 plot_co2_decay_event_analytical(
                     co2_data=co2_data,
                     event=event,
@@ -1314,7 +1317,11 @@ def run_co2_decay_analysis(
         # Optionally truncate decay window at first entry > bedroom crossing
         if entry_stop:
             event = _apply_entry_stop(event, co2_data)
-            orig_end = event.get("decay_start") + timedelta(hours=DECAY_DURATION_HOURS) if event.get("decay_start") else None
+            orig_end = (
+                event.get("decay_start") + timedelta(hours=DECAY_DURATION_HOURS)
+                if event.get("decay_start")
+                else None
+            )
             new_end = event.get("decay_end")
             if orig_end is not None and new_end is not None and new_end < orig_end:
                 dur = event["decay_duration_hours"]
@@ -1344,10 +1351,7 @@ def run_co2_decay_analysis(
 
                 formatted_name = format_test_name_for_filename(test_name)
                 co2_decay_dir.mkdir(parents=True, exist_ok=True)
-                plot_path = (
-                    co2_decay_dir
-                    / f"event_{event_num:02d}-{formatted_name}_co2_decay.png"
-                )
+                plot_path = co2_decay_dir / f"event_{event_num:02d}-{formatted_name}_co2_decay.png"
                 plot_co2_decay_event_analytical(
                     co2_data=co2_data,
                     event=event,
@@ -1394,9 +1398,7 @@ def run_co2_decay_analysis(
             print(f"  Median: {valid_values.median():.4f} h⁻¹")
             print(f"  Range:  {valid_values.min():.4f} - {valid_values.max():.4f} h⁻¹")
             if mode == "average" and "lambda_average_r_squared" in results_df.columns:
-                valid_r2 = results_df.loc[
-                    valid_values.index, "lambda_average_r_squared"
-                ]
+                valid_r2 = results_df.loc[valid_values.index, "lambda_average_r_squared"]
                 print(f"  Mean R²: {valid_r2.mean():.4f}")
             print(f"  N events: {len(valid_values)}")
 
@@ -1416,7 +1418,7 @@ def run_co2_decay_analysis(
         column_rename[f"lambda_{mode}_std"] = f"lambda_{mode}_std (h-1)"
     results_df_export = results_df.rename(columns=column_rename)
     results_df_export = sf.apply_sig_figs_to_df(results_df_export)
-    results_df_export.to_csv(output_file, index=False, encoding='utf-8-sig')
+    results_df_export.to_csv(output_file, index=False, encoding="utf-8-sig")
     print(f"\nResults saved to: {output_file}")
 
     # Save detailed summary - one row per configuration
@@ -1472,9 +1474,7 @@ def run_co2_decay_analysis(
             col = f"lambda_{mode}_mean"
             valid_values = config_df[col].dropna()
             if len(valid_values) > 0:
-                summary[f"lambda_{mode}_overall_mean (h-1)"] = float(
-                    valid_values.mean()
-                )
+                summary[f"lambda_{mode}_overall_mean (h-1)"] = float(valid_values.mean())
                 summary[f"lambda_{mode}_overall_std (h-1)"] = float(valid_values.std())
             else:
                 summary[f"lambda_{mode}_overall_mean (h-1)"] = np.nan
@@ -1511,12 +1511,8 @@ def run_co2_decay_analysis(
             col = f"lambda_{mode}_mean"
             valid_values = results_df[col].dropna()
             if len(valid_values) > 0:
-                summary_all[f"lambda_{mode}_overall_mean (h-1)"] = float(
-                    valid_values.mean()
-                )
-                summary_all[f"lambda_{mode}_overall_std (h-1)"] = float(
-                    valid_values.std()
-                )
+                summary_all[f"lambda_{mode}_overall_mean (h-1)"] = float(valid_values.mean())
+                summary_all[f"lambda_{mode}_overall_std (h-1)"] = float(valid_values.std())
             else:
                 summary_all[f"lambda_{mode}_overall_mean (h-1)"] = np.nan
                 summary_all[f"lambda_{mode}_overall_std (h-1)"] = np.nan
