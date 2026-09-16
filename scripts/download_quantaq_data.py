@@ -37,7 +37,8 @@ Processing Features:
 Methodology:
     1. Load API configuration and data path from data_config.json
     2. Authenticate with QuantAQ API using QUANTAQ_API_KEY environment variable
-    3. Compute 7-day chunks from START_DATE (2026-01-05) through today
+    3. Compute 7-day chunks from START_DATE (2026-01-05) through today,
+       capped at PROJECT_END_DATE (2026-07-16)
     4. For each device (inside/outside) and data type (raw/final):
        a. Scan chunks/ directory for existing files
        b. Skip past weeks already on disk; re-download the current partial week
@@ -89,6 +90,10 @@ DEVICES = {
 
 # Data start date (January 5, 2026)
 START_DATE = "2026-01-05"
+
+# Project end date. The test campaign concluded on this date, so no QuantAQ
+# data exists past it even if the script is run later.
+PROJECT_END_DATE = "2026-07-16"
 
 # Data types to download
 DATA_TYPES = ["raw", "final"]
@@ -668,8 +673,8 @@ def main():
         print(f"Error: {e}")
         sys.exit(1)
 
-    # Get end date (today)
-    end_date = date.today().strftime("%Y-%m-%d")
+    # Get end date (today, capped at the project end date)
+    end_date = min(date.today(), date.fromisoformat(PROJECT_END_DATE)).strftime("%Y-%m-%d")
     print(f"Date range: {START_DATE} to {end_date}")
     print(f"Chunk size: {CHUNK_DAYS} days")
     print()

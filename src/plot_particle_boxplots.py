@@ -248,28 +248,36 @@ def _build_temp_stats(
 
 
 # Configuration for the four fixed-temperature-axis boxplot functions.
-# Keys: col_template, ylabel, title_metric, title_note, hline (None or float)
+# Keys: col_template, ylabel, title_metric, title_note, hline (None or float),
+#       has_source (bool — True for metrics computed once per lambda source,
+#       False for source-independent metrics such as penetration factor).
+# col_template includes a {source} placeholder for has_source=True entries;
+# format() calls always pass source= (None when has_source=False), which is
+# harmless for templates that don't reference it.
 _TEMP_BOXPLOT_CONFIG = {
     "emission_etotal": dict(
-        col_template="bin{n}_E_total",
+        col_template="bin{n}_{source}_E_total",
         ylabel="Total Emission E_total (#)",
         title_metric="Particle Emission",
         title_note="(Box = median/IQR, whiskers = 1.5×IQR)",
         hline=None,
+        has_source=True,
     ),
     "deposition_rate": dict(
-        col_template="bin{n}_beta_other_raw_mean",
+        col_template="bin{n}_{source}_beta_other_raw_mean",
         ylabel="Other Process Rate β (h⁻¹)",
         title_metric="Particle Other Process Rate",
         title_note="(Box = median/IQR, whiskers = 1.5×IQR; β = unclamped trimmed mean)",
         hline=0.0,
+        has_source=True,
     ),
     "emission_rate": dict(
-        col_template="bin{n}_E_mean",
+        col_template="bin{n}_{source}_E_mean",
         ylabel="Emission Rate E (#/min)",
         title_metric="Particle Emission Rate",
         title_note="(Box = median/IQR, whiskers = 1.5×IQR; E = mean over shower-on to peak)",
         hline=None,
+        has_source=True,
     ),
     "penetration_factor": dict(
         col_template="bin{n}_p_mean",
@@ -277,6 +285,7 @@ _TEMP_BOXPLOT_CONFIG = {
         title_metric="Particle Penetration Factor",
         title_note="(Box = median/IQR, whiskers = 1.5×IQR; p capped at 1)",
         hline=1.0,
+        has_source=False,
     ),
 }
 
@@ -341,9 +350,12 @@ def _draw_temp_axis_boxplot(
     Shared implementation for all four fixed-temperature-axis boxplot functions.
 
     Produces three output files (bin0-2, bin3-6, bin7-11) by appending the
-    bin-range suffix to *output_path*.  Only base W## events are included.
-    X-axis is the fixed temperature range from BOXPLOT_CONFIG (5–60 °C) unless
-    *x_range* is provided.
+    bin-range suffix to *output_path*, doubled to six when *cfg* is a
+    lambda-dependent metric (``has_source=True``): each bin-range file is
+    drawn once per air-change-rate source with an ``_outside``/``_entry``
+    suffix, bounding the result instead of blending the two sources. Only
+    base W## events are included. X-axis is the fixed temperature range from
+    BOXPLOT_CONFIG (5–60 °C) unless *x_range* is provided.
 
     Parameters:
         results_df: DataFrame with analysis results (must contain config_key).
@@ -409,105 +421,118 @@ def _draw_temp_axis_boxplot(
         md_groups.append({"header": header, "events": events_list})
     _write_boxplot_companion_md(output_path, cfg["title_metric"], md_groups)
 
-    for group_bins, group_label in bin_groups:
-        if not group_bins:
-            continue
+    # Lambda-dependent metrics (has_source=True) are drawn twice, once per
+    # air-change-rate source, bounding the result; source-independent metrics
+    # (e.g. penetration factor) are drawn once with no source suffix.
+    sources = ("outside", "entry") if cfg.get("has_source", True) else (None,)
 
-        value_cols = [cfg["col_template"].format(n=b) for b in group_bins]
-        temp_stats = _build_temp_stats(base_df, config_keys, temp_map, value_cols)
+    for source in sources:
+        source_suffix = f"_{source}" if source else ""
+        source_note = f" ({source} source)" if source else ""
 
-        fig, ax = create_figure(figsize=BOXPLOT_CONFIG["figsize"])
-        if isinstance(ax, list):
-            ax = ax[0]
-
-        for bin_num in group_bins:
-            global_idx = all_bin_nums.index(bin_num)
-            color = SENSOR_COLORS[global_idx % len(SENSOR_COLORS)]
-            col = cfg["col_template"].format(n=bin_num)
-            if col not in base_df.columns:
+        for group_bins, group_label in bin_groups:
+            if not group_bins:
                 continue
 
-            positions, data = [], []
-            for config_key in config_keys:
-                temp = temp_map.get(config_key)
-                if temp is None:
+            value_cols = [cfg["col_template"].format(n=b, source=source) for b in group_bins]
+            temp_stats = _build_temp_stats(base_df, config_keys, temp_map, value_cols)
+
+            fig, ax = create_figure(figsize=BOXPLOT_CONFIG["figsize"])
+            if isinstance(ax, list):
+                ax = ax[0]
+
+            for bin_num in group_bins:
+                global_idx = all_bin_nums.index(bin_num)
+                color = SENSOR_COLORS[global_idx % len(SENSOR_COLORS)]
+                col = cfg["col_template"].format(n=bin_num, source=source)
+                if col not in base_df.columns:
                     continue
-                values = base_df[base_df["config_key"] == config_key][col].dropna().values
-                if len(values) > 0:
-                    positions.append(temp)
-                    data.append(values)
 
-            if not data:
-                continue
+                positions, data = [], []
+                for config_key in config_keys:
+                    temp = temp_map.get(config_key)
+                    if temp is None:
+                        continue
+                    values = base_df[base_df["config_key"] == config_key][col].dropna().values
+                    if len(values) > 0:
+                        positions.append(temp)
+                        data.append(values)
 
-            bp = ax.boxplot(
-                data,
-                positions=positions,
-                widths=float(all_bin_widths[global_idx]),
-                patch_artist=True,
-                showfliers=True,
-                flierprops=dict(
-                    marker=BOXPLOT_CONFIG["flier_marker"],
-                    markersize=BOXPLOT_CONFIG["flier_markersize"],
-                    alpha=BOXPLOT_CONFIG["flier_alpha"],
-                    color=color,
-                ),
+                if not data:
+                    continue
+
+                bp = ax.boxplot(
+                    data,
+                    positions=positions,
+                    widths=float(all_bin_widths[global_idx]),
+                    patch_artist=True,
+                    showfliers=True,
+                    flierprops=dict(
+                        marker=BOXPLOT_CONFIG["flier_marker"],
+                        markersize=BOXPLOT_CONFIG["flier_markersize"],
+                        alpha=BOXPLOT_CONFIG["flier_alpha"],
+                        color=color,
+                    ),
+                )
+                for patch in bp["boxes"]:
+                    patch.set_facecolor(color)
+                    patch.set_alpha(BOXPLOT_CONFIG["box_alpha"])
+                for element in ("whiskers", "caps"):
+                    for line in bp[element]:
+                        line.set_color(color)
+                        line.set_alpha(BOXPLOT_CONFIG["box_alpha"])
+                for med in bp["medians"]:
+                    med.set_color(BOXPLOT_CONFIG["median_color"])
+                    med.set_linewidth(BOXPLOT_CONFIG["median_linewidth"])
+
+            _annotate_temp_groups(ax, temp_stats, rh_data, font_size=FONT_SIZE_ANNOTATION)
+
+            if x_range is not None:
+                bxmin, bxmax, bxstep = x_range
+            else:
+                bxmin = BOXPLOT_CONFIG["temp_xmin"]
+                bxmax = BOXPLOT_CONFIG["temp_xmax"]
+                bxstep = BOXPLOT_CONFIG["temp_xtick_step"]
+            bxticks = range(bxmin, bxmax + bxstep, bxstep)
+            ax.set_xlim(bxmin, bxmax)
+            ax.set_xticks(bxticks)
+            ax.set_xticklabels([f"{t}°C" for t in bxticks], fontsize=FONT_SIZE_TICK)
+            ax.set_xlabel("Water Temperature (°C)", fontsize=FONT_SIZE_LABEL)
+            ax.set_ylabel(cfg["ylabel"], fontsize=FONT_SIZE_LABEL)
+            bin_label = group_label.replace("-", "–").replace("bin", "Bin ")
+            ax.set_title(
+                f"{cfg['title_metric']} by Water Temperature — {bin_label}{source_note}\n"
+                f"{cfg['title_note']}",
+                fontsize=FONT_SIZE_TITLE,
+                fontweight=TITLE_FONTWEIGHT,
             )
-            for patch in bp["boxes"]:
-                patch.set_facecolor(color)
-                patch.set_alpha(BOXPLOT_CONFIG["box_alpha"])
-            for element in ("whiskers", "caps"):
-                for line in bp[element]:
-                    line.set_color(color)
-                    line.set_alpha(BOXPLOT_CONFIG["box_alpha"])
-            for med in bp["medians"]:
-                med.set_color(BOXPLOT_CONFIG["median_color"])
-                med.set_linewidth(BOXPLOT_CONFIG["median_linewidth"])
+            if cfg["hline"] is not None:
+                ax.axhline(cfg["hline"], color="gray", linewidth=0.8, linestyle=":", alpha=0.6)
+            ax.grid(True, alpha=0.3, axis="y")
+            ax.tick_params(labelsize=FONT_SIZE_TICK)
 
-        _annotate_temp_groups(ax, temp_stats, rh_data, font_size=FONT_SIZE_ANNOTATION)
-
-        if x_range is not None:
-            bxmin, bxmax, bxstep = x_range
-        else:
-            bxmin = BOXPLOT_CONFIG["temp_xmin"]
-            bxmax = BOXPLOT_CONFIG["temp_xmax"]
-            bxstep = BOXPLOT_CONFIG["temp_xtick_step"]
-        bxticks = range(bxmin, bxmax + bxstep, bxstep)
-        ax.set_xlim(bxmin, bxmax)
-        ax.set_xticks(bxticks)
-        ax.set_xticklabels([f"{t}°C" for t in bxticks], fontsize=FONT_SIZE_TICK)
-        ax.set_xlabel("Water Temperature (°C)", fontsize=FONT_SIZE_LABEL)
-        ax.set_ylabel(cfg["ylabel"], fontsize=FONT_SIZE_LABEL)
-        bin_label = group_label.replace("-", "–").replace("bin", "Bin ")
-        ax.set_title(
-            f"{cfg['title_metric']} by Water Temperature — {bin_label}\n{cfg['title_note']}",
-            fontsize=FONT_SIZE_TITLE,
-            fontweight=TITLE_FONTWEIGHT,
-        )
-        if cfg["hline"] is not None:
-            ax.axhline(cfg["hline"], color="gray", linewidth=0.8, linestyle=":", alpha=0.6)
-        ax.grid(True, alpha=0.3, axis="y")
-        ax.tick_params(labelsize=FONT_SIZE_TICK)
-
-        legend_elements = [
-            Patch(
-                facecolor=SENSOR_COLORS[all_bin_nums.index(b) % len(SENSOR_COLORS)],
-                alpha=0.7,
-                label=f"Bin {b} ({particle_bins[b]['name']} µm)",
+            legend_elements = [
+                Patch(
+                    facecolor=SENSOR_COLORS[all_bin_nums.index(b) % len(SENSOR_COLORS)],
+                    alpha=0.7,
+                    label=f"Bin {b} ({particle_bins[b]['name']} µm)",
+                )
+                for b in group_bins
+            ]
+            ax.legend(
+                handles=legend_elements,
+                loc="upper right",
+                fontsize=FONT_SIZE_LEGEND - 1,
+                ncol=1,
             )
-            for b in group_bins
-        ]
-        ax.legend(
-            handles=legend_elements,
-            loc="upper right",
-            fontsize=FONT_SIZE_LEGEND - 1,
-            ncol=1,
-        )
 
-        group_output = output_path.parent / f"{output_path.stem}_{group_label}{output_path.suffix}"
-        plt.tight_layout()
-        save_figure(fig, group_output)
-        plt.close(fig)
+            group_output = (
+                output_path.parent
+                / f"{output_path.stem}_{group_label}{source_suffix}{output_path.suffix}"
+            )
+            plt.tight_layout()
+            save_figure(fig, group_output)
+            plt.close(fig)
 
 
 def plot_emission_boxplot(
@@ -620,13 +645,19 @@ def plot_emission_etotal_by_metric_boxplot(
     output_path: Path,
     metric_col: str,
     metric_label: str,
+    source: str,
     rh_data: "Optional[pd.DataFrame]" = None,
     x_range: "Optional[tuple]" = None,
 ) -> None:
     """
     Create three box-and-whisker figures of E_total positioned along a continuous metric axis.
 
-    Produces one figure for each bin group (Bin 0–2, 3–6, 7–11).
+    Produces one figure for each bin group (Bin 0–2, 3–6, 7–11), for one
+    air-change-rate source (outside or entry) — E_total is lambda-dependent,
+    so the caller invokes this once per source with an output_path/metric_col
+    pair matched to that source (e.g. lambda_outside with the outside E_total,
+    lambda_entry with the entry E_total; source-independent x-axis metrics
+    such as bedroom RH reuse the same metric_col for both calls).
     Unlike :func:`plot_emission_boxplot`, the x-axis is not fixed to the
     5–60 °C water-temperature range; instead each water-temperature group (W##) is
     centred at the *group mean* of *metric_col*, and the x-axis auto-scales from data
@@ -637,13 +668,16 @@ def plot_emission_etotal_by_metric_boxplot(
 
     Parameters:
         results_df: DataFrame with analysis results; must contain 'config_key',
-                    bin{n}_E_total columns, and *metric_col*.
+                    bin{n}_{source}_E_total columns, and *metric_col*.
         particle_bins: Dictionary of particle bin information.
         output_path: Base path used to derive the three output filenames (suffix
-                     ``_bin0-2``, ``_bin3-6``, ``_bin7-11`` are appended to the stem).
+                     ``_bin0-2``, ``_bin3-6``, ``_bin7-11`` plus ``_{source}``
+                     are appended to the stem).
         metric_col: Column name in *results_df* used to position each
                     temperature-group box along the x-axis (group mean).
         metric_label: Human-readable x-axis label (e.g. 'Bedroom RH (%)').
+        source: Air-change-rate source whose E_total values are plotted:
+                "outside" or "entry".
         rh_data: Optional DataFrame with 'datetime' and 'RH_bedroom' for the
                  n=/RH= annotation (same as other boxplot functions).
         x_range: Optional (xmin, xmax, xtick_step) tuple to fix the x-axis
@@ -700,8 +734,9 @@ def plot_emission_etotal_by_metric_boxplot(
                 ck,
             ))
         md_groups.append({"header": header, "events": events_list})
-    fig_title = f"E_total by {metric_label}"
-    _write_boxplot_companion_md(output_path, fig_title, md_groups)
+    fig_title = f"E_total by {metric_label} ({source} source)"
+    md_path = output_path.parent / f"{output_path.stem}_{source}{output_path.suffix}"
+    _write_boxplot_companion_md(md_path, fig_title, md_groups)
 
     for group_bins, group_label in bin_groups:
         if not group_bins:
@@ -728,7 +763,7 @@ def plot_emission_etotal_by_metric_boxplot(
         all_bin_widths = np.linspace(width_min, width_max, len(all_bin_nums))
 
         # Build annotation stats keyed by x position (not temperature)
-        value_cols = [f"bin{b}_E_total" for b in group_bins]
+        value_cols = [f"bin{b}_{source}_E_total" for b in group_bins]
         annot_stats: dict = {}
         for config_key, x_pos in group_x_pos.items():
             group_df = base_df[base_df["config_key"] == config_key]
@@ -754,7 +789,7 @@ def plot_emission_etotal_by_metric_boxplot(
         for bin_num in group_bins:
             global_idx = all_bin_nums.index(bin_num)
             color = SENSOR_COLORS[global_idx % len(SENSOR_COLORS)]
-            col = f"bin{bin_num}_E_total"
+            col = f"bin{bin_num}_{source}_E_total"
             if col not in base_df.columns:
                 continue
 
@@ -818,7 +853,7 @@ def plot_emission_etotal_by_metric_boxplot(
         ax.set_ylabel("Total Emission E_total (#)", fontsize=FONT_SIZE_LABEL)
         ax.set_title(
             f"Particle Emission by {metric_label} — "
-            f"{group_label.replace('-', '–').replace('bin', 'Bin ')}"
+            f"{group_label.replace('-', '–').replace('bin', 'Bin ')} ({source} source)"
             "\n(Box = median/IQR, whiskers = 1.5×IQR; x = group mean of metric)",
             fontsize=FONT_SIZE_TITLE,
             fontweight=TITLE_FONTWEIGHT,
@@ -843,7 +878,9 @@ def plot_emission_etotal_by_metric_boxplot(
             ncol=1,
         )
 
-        metric_output = output_path.parent / f"{output_path.stem}_{group_label}{output_path.suffix}"
+        metric_output = (
+            output_path.parent / f"{output_path.stem}_{group_label}_{source}{output_path.suffix}"
+        )
         plt.tight_layout()
         save_figure(fig, metric_output)
         plt.close(fig)
@@ -853,12 +890,15 @@ def plot_emission_etotal_by_showerhead_boxplot(
     results_df: pd.DataFrame,
     particle_bins: Dict,
     output_path: Path,
+    source: str,
     rh_data: "Optional[pd.DataFrame]" = None,
 ) -> None:
     """
     Create three box-and-whisker figures of E_total grouped by shower head type.
 
-    Produces one figure for each bin group (Bin 0–2, 3–6, 7–11).
+    Produces one figure for each bin group (Bin 0–2, 3–6, 7–11), for one
+    air-change-rate source (outside or entry) — E_total is lambda-dependent,
+    so the caller invokes this once per source.
     Configs are ordered by temperature and grouped into four clusters separated
     by visible gaps on the categorical x-axis:
       - Cluster 1: W37, W38_Pepco_Narrow, W38_Pepco_Wide, W40_Pepco_Narrow,
@@ -873,10 +913,13 @@ def plot_emission_etotal_by_showerhead_boxplot(
 
     Parameters:
         results_df: DataFrame with analysis results; must contain 'config_key'
-                    and bin{n}_E_total columns.
+                    and bin{n}_{source}_E_total columns.
         particle_bins: Dictionary of particle bin information.
         output_path: Base path used to derive the three output filenames (suffix
-                     ``_bin0-2``, ``_bin3-6``, ``_bin7-11`` are appended to the stem).
+                     ``_bin0-2``, ``_bin3-6``, ``_bin7-11`` plus ``_{source}``
+                     are appended to the stem).
+        source: Air-change-rate source whose E_total values are plotted:
+                "outside" or "entry".
         rh_data: Optional DataFrame with 'datetime' and 'RH_bedroom' for the
                  n=/RH= annotation (same as other boxplot functions).
     """
@@ -972,13 +1015,16 @@ def plot_emission_etotal_by_showerhead_boxplot(
                 row.get("config_key", sh_key),
             ))
         md_groups.append({"header": header, "events": events_list})
-    _write_boxplot_companion_md(output_path, "E_total by Shower Head Type", md_groups)
+    md_path = output_path.parent / f"{output_path.stem}_{source}{output_path.suffix}"
+    _write_boxplot_companion_md(
+        md_path, f"E_total by Shower Head Type ({source} source)", md_groups
+    )
 
     for group_bins, group_label in bin_groups:
         if not group_bins:
             continue
 
-        value_cols = [f"bin{b}_E_total" for b in group_bins]
+        value_cols = [f"bin{b}_{source}_E_total" for b in group_bins]
 
         # Build annotation stats keyed by categorical x position
         annot_stats: dict = {}
@@ -1016,7 +1062,7 @@ def plot_emission_etotal_by_showerhead_boxplot(
         for bin_num in group_bins:
             global_idx = all_bin_nums.index(bin_num)
             color = SENSOR_COLORS[global_idx % len(SENSOR_COLORS)]
-            col = f"bin{bin_num}_E_total"
+            col = f"bin{bin_num}_{source}_E_total"
             if col not in sh_df.columns:
                 continue
 
@@ -1103,7 +1149,7 @@ def plot_emission_etotal_by_showerhead_boxplot(
         ax.set_ylabel("Total Emission E_total (#)", fontsize=FONT_SIZE_LABEL)
         bin_label = group_label.replace("-", "–").replace("bin", "Bin ")
         ax.set_title(
-            f"Particle Emission by Shower Head Type — {bin_label}"
+            f"Particle Emission by Shower Head Type — {bin_label} ({source} source)"
             "\n(Box = median/IQR, whiskers = 1.5×IQR)",
             fontsize=FONT_SIZE_TITLE,
             fontweight=TITLE_FONTWEIGHT,
@@ -1126,7 +1172,9 @@ def plot_emission_etotal_by_showerhead_boxplot(
             ncol=1,
         )
 
-        sh_output = output_path.parent / f"{output_path.stem}_{group_label}{output_path.suffix}"
+        sh_output = (
+            output_path.parent / f"{output_path.stem}_{group_label}_{source}{output_path.suffix}"
+        )
         plt.tight_layout()
         save_figure(fig, sh_output)
         plt.close(fig)

@@ -383,7 +383,8 @@ def get_events_from_registry(output_dir: Path) -> tuple:
                     "shower_on": pd.to_datetime(row["shower_on"]),
                     "shower_off": pd.to_datetime(row["shower_off"]),
                     "shower_duration_min": row.get("shower_duration_min", 0),
-                    "lambda_ach": row.get("lambda_average_mean", np.nan),
+                    "lambda_outside_mean": row.get("lambda_outside_mean", np.nan),
+                    "lambda_entry_mean": row.get("lambda_entry_mean", np.nan),
                     "co2_event_idx": None,  # Not needed when using registry
                     "deposition_start": pd.to_datetime(
                         row.get("deposition_start"), errors="coerce"
@@ -406,7 +407,10 @@ def get_events_from_registry(output_dir: Path) -> tuple:
 
         print(f"  Loaded {len(events)} events from registry")
         n_with_lambda = sum(
-            1 for e in events if not np.isnan(e.get("lambda_ach", np.nan))
+            1
+            for e in events
+            if not np.isnan(e.get("lambda_outside_mean", np.nan))
+            or not np.isnan(e.get("lambda_entry_mean", np.nan))
         )
         print(f"  Events with lambda values: {n_with_lambda}")
 

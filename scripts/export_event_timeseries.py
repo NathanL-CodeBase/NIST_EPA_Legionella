@@ -92,6 +92,8 @@ def build_ct_dataframe(result: dict) -> pd.DataFrame:
 
     Uses the continuous ct_datetimes / ct_predicted arrays produced by
     calculate_ct_prediction (emission phase + decay phase concatenated).
+    Each bin has two predictions, one per air-change-rate source (outside,
+    entry), exported as separate columns bounding the result.
 
     Parameters
     ----------
@@ -101,27 +103,30 @@ def build_ct_dataframe(result: dict) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        Indexed by timestamp; one column per bin (bin0_Ct … binN_Ct), in #/m³.
+        Indexed by timestamp; one column per bin per source
+        (bin0_outside_Ct, bin0_entry_Ct, … binN_entry_Ct), in #/m³.
     """
     frames = {}
     for bin_num in PARTICLE_BINS.keys():
-        # Prefer the full ct arrays; fall back to emission+decay separately
-        ct_dts = result.get(f"bin{bin_num}_ct_datetimes", [])
-        ct_pred = result.get(f"bin{bin_num}_ct_predicted", [])
+        for source in ("outside", "entry"):
+            prefix = f"bin{bin_num}_{source}"
+            # Prefer the full ct arrays; fall back to emission+decay separately
+            ct_dts = result.get(f"{prefix}_ct_datetimes", [])
+            ct_pred = result.get(f"{prefix}_ct_predicted", [])
 
-        if not len(ct_dts) or not len(ct_pred):
-            # Try reconstructing from emission + decay segments
-            em_dts = result.get(f"bin{bin_num}_emission_datetimes", [])
-            em_pred = result.get(f"bin{bin_num}_emission_predicted", [])
-            dc_dts = result.get(f"bin{bin_num}_decay_datetimes", [])
-            dc_pred = result.get(f"bin{bin_num}_decay_predicted", [])
-            ct_dts = list(em_dts) + list(dc_dts)
-            ct_pred = list(em_pred) + list(dc_pred)
+            if not len(ct_dts) or not len(ct_pred):
+                # Try reconstructing from emission + decay segments
+                em_dts = result.get(f"{prefix}_emission_datetimes", [])
+                em_pred = result.get(f"{prefix}_emission_predicted", [])
+                dc_dts = result.get(f"{prefix}_decay_datetimes", [])
+                dc_pred = result.get(f"{prefix}_decay_predicted", [])
+                ct_dts = list(em_dts) + list(dc_dts)
+                ct_pred = list(em_pred) + list(dc_pred)
 
-        if len(ct_dts) and len(ct_pred):
-            ts = pd.to_datetime(ct_dts)
-            vals = np.array(ct_pred, dtype=float) * _CM3_TO_M3  # convert to #/m³
-            frames[f"bin{bin_num}_Ct (#/m3)"] = pd.Series(vals, index=ts)
+            if len(ct_dts) and len(ct_pred):
+                ts = pd.to_datetime(ct_dts)
+                vals = np.array(ct_pred, dtype=float) * _CM3_TO_M3  # convert to #/m³
+                frames[f"{prefix}_Ct (#/m3)"] = pd.Series(vals, index=ts)
 
     if not frames:
         return pd.DataFrame()
@@ -184,22 +189,26 @@ def export_event_timeseries(
         print(f"WARNING: Event {event_number} is excluded ({reason}).")
         print("  Proceeding with export anyway.")
 
-    # ── Load lambda ────────────────────────────────────────────────────────
-    lambda_ach = event.get("lambda_ach", np.nan)
-    if np.isnan(lambda_ach):
-        print("\nNote: lambda_ach not in registry; loading from CO2 results...")
+    # ── Load lambda (outside and entry sources; particle analysis bounds
+    #    results with both rather than a single blended average) ────────────
+    lambda_outside = event.get("lambda_outside_mean", np.nan)
+    lambda_entry = event.get("lambda_entry_mean", np.nan)
+    if np.isnan(lambda_outside) and np.isnan(lambda_entry):
+        print("\nNote: lambda not in registry; loading from CO2 results...")
         try:
             lambda_df = load_co2_lambda_results(output_dir)
             row = lambda_df[lambda_df["event_number"] == event_number]
             if not row.empty:
-                lambda_ach = float(row["lambda_average_mean"].iloc[0])
-                print(f"  Loaded λ = {lambda_ach:.4f} h⁻¹")
+                lambda_outside = float(row["lambda_outside_mean"].iloc[0])
+                lambda_entry = float(row["lambda_entry_mean"].iloc[0])
+                print(f"  Loaded lambda_outside = {lambda_outside:.4f} h⁻¹")
+                print(f"  Loaded lambda_entry = {lambda_entry:.4f} h⁻¹")
             else:
                 print(f"  WARNING: No lambda found for event {event_number}.")
         except Exception as exc:
             print(f"  WARNING: Could not load lambda: {exc}")
 
-    if np.isnan(lambda_ach):
+    if np.isnan(lambda_outside) and np.isnan(lambda_entry):
         print("ERROR: Cannot export without a valid air-change rate (λ).")
         print("  Run 'python scripts/co2_decay_analysis.py' first.")
         sys.exit(1)
@@ -216,7 +225,7 @@ def export_event_timeseries(
     from scripts.particle_decay_analysis import analyze_event_all_bins  # noqa: E402
 
     print(f"\nRunning particle decay analysis for event {event_number:02d}...")
-    result = analyze_event_all_bins(particle_data, event, lambda_ach)
+    result = analyze_event_all_bins(particle_data, event, lambda_outside, lambda_entry)
 
     # ── Build DataFrame ────────────────────────────────────────────────────
     ct_df = build_ct_dataframe(result)
@@ -239,10 +248,12 @@ def export_event_timeseries(
 
     print(f"\nDone. Output: {output_path}")
 
-    # ── Summary of valid bins ──────────────────────────────────────────────
+    # ── Summary of valid bins (valid in at least one lambda source) ────────
     valid_bins = [
-        bn for bn in PARTICLE_BINS.keys()
-        if not np.isnan(result.get(f"bin{bn}_E_mean", np.nan))
+        bn
+        for bn in PARTICLE_BINS.keys()
+        if not np.isnan(result.get(f"bin{bn}_outside_E_mean", np.nan))
+        or not np.isnan(result.get(f"bin{bn}_entry_E_mean", np.nan))
     ]
     print(
         f"\nValid bins: {len(valid_bins)}/{len(PARTICLE_BINS)} "

@@ -14,12 +14,17 @@ Key Functions:
       penetration factor based on shower time and time of day (Night vs. Day)
     - calculate_penetration_factor: Estimate p = C_inside / C_outside from
       quiet-period windows; zeros excluded, result capped at 1
+    - find_peak_time: Locate the indoor concentration peak within the 0-2 h
+      post-shower-off window; lambda-independent, shared by every source
     - calculate_other_process_rate: Estimate beta (deposition + other losses)
-      numerically from the post-shower decay using R²-based 4-step selection
+      numerically over the fixed 1-2 h post-shower-off window using R²-based
+      4-step selection. Called once per lambda source (outside, entry).
     - calculate_emission_rate: Estimate E (#/min) from the shower-on-to-peak
-      mass balance; reports mean, std, median, and trapezoidal E_total
+      mass balance; reports mean, std, median, and trapezoidal E_total. Called
+      once per lambda source, sharing the one find_peak_time result.
     - calculate_ct_prediction: Forward Euler simulation of indoor concentration
-      from shower_on to deposition_end; split into emission and decay phases
+      from shower_on to deposition_end; split into emission and decay phases.
+      Called once per lambda source.
 
 Processing Features:
     - Twelve Alphasense OPC-N3 particle size bins (0.35–10.0 µm) processed
@@ -342,6 +347,70 @@ def calculate_penetration_factor(
 
 
 # =============================================================================
+# Peak Time
+# =============================================================================
+
+
+def find_peak_time(
+    particle_data: pd.DataFrame,
+    window_start: datetime,
+    window_end: datetime,
+    bin_num: int,
+) -> Dict:
+    """
+    Find the time of peak indoor concentration for a bin within a window.
+
+    Simple global argmax of indoor concentration over ``[window_start,
+    window_end]`` — no smoothing. Used to bound the shower-on-to-peak emission
+    window (Section 3.4.7) and to split the Ct prediction into emission and
+    decay phases. Independent of air change rate, so it is computed once per
+    bin and shared by every lambda source's downstream calculation.
+
+    Parameters:
+        particle_data (pd.DataFrame): DataFrame with particle concentrations
+        window_start (datetime): Start of the search window (deposition_start,
+            i.e. shower_off)
+        window_end (datetime): End of the search window (deposition_end,
+            i.e. shower_off + DEPOSITION_WINDOW_HOURS)
+        bin_num (int): Particle bin number (0-11)
+
+    Returns:
+        Dict: {"peak_time": Timestamp or None, "n_points": int} plus
+              "skip_reason" on failure
+    """
+    bin_info = PARTICLE_BINS[bin_num]
+    col_inside = f"{bin_info['column']}_inside"
+
+    mask = (particle_data["datetime"] >= window_start) & (
+        particle_data["datetime"] <= window_end
+    )
+    window_data = particle_data[mask]
+
+    if len(window_data) < MIN_POINTS_OTHER_PROCESS:
+        return {
+            "peak_time": None,
+            "n_points": len(window_data),
+            "skip_reason": (
+                f"Insufficient data: {len(window_data)} points "
+                f"(minimum {MIN_POINTS_OTHER_PROCESS} required)"
+            ),
+        }
+
+    c_inside_full = np.asarray(window_data[col_inside].values, dtype=np.float64)
+    if not np.any(~np.isnan(c_inside_full)):
+        return {
+            "peak_time": None,
+            "n_points": len(window_data),
+            "skip_reason": "No valid concentration data in window",
+        }
+
+    peak_idx = np.nanargmax(c_inside_full)
+    peak_time = pd.Timestamp(window_data["datetime"].iloc[peak_idx])
+
+    return {"peak_time": peak_time, "n_points": len(window_data)}
+
+
+# =============================================================================
 # Other Process Rate Functions
 # =============================================================================
 
@@ -357,15 +426,20 @@ def calculate_other_process_rate(
     """
     Calculate other process rate (beta_other) using a numerical step-by-step approach.
 
-    At each consecutive time step in the post-shower decay window the mass
-    balance (with E = 0) is rearranged to solve for beta:
+    At each consecutive time step in the fixed post-shower decay window
+    (``window_start`` to ``window_end``, 1 h to 2 h after shower off — see
+    Section 3.4.6) the mass balance (with E = 0) is rearranged to solve for
+    beta:
 
         (C_{t+1} - C_t)/dt = p*lambda*C_out,t - lambda*C_t - beta*C_t
 
         => beta = 1/dt - lambda - C_{t+1}/(C_t*dt) + p*lambda*(C_out,t/C_t)
 
     where dt is the time step in hours and C_out,t is the measured outdoor
-    concentration at time t (time-varying, not averaged).
+    concentration at time t (time-varying, not averaged). Unlike the emission
+    rate and Ct prediction steps, this window does not depend on the
+    concentration peak — the room is assumed uniform enough for the mass
+    balance to hold by construction, per Section 3.4.3.
 
     All per-step estimates at or below MAX_OTHER_PROCESS_RATE are collected
     (no lower bound — negative values from noise or brief concentration
@@ -375,10 +449,10 @@ def calculate_other_process_rate(
     and the measured (time-varying) outdoor concentration.
 
     QA filters applied:
-        - MIN_POINTS_OTHER_PROCESS (10): minimum valid data points both in the
-          full window and after peak; the 2-hr window at 1-min resolution
-          yields ~120 points, so 10 rejects only severe dropouts.
-        - MAX_OTHER_PROCESS_RATE (15.0 h⁻¹): upper cap on per-step estimates;
+        - MIN_POINTS_OTHER_PROCESS (10): minimum valid data points in the
+          window; the 1-hr window at 1-min resolution yields ~60 points, so
+          10 rejects only severe dropouts.
+        - MAX_OTHER_PROCESS_RATE (5.0 h⁻¹): upper cap on per-step estimates;
           values above this are physically unreasonable for sub-3 µm particles
           and indicate measurement noise spikes.
         - 5th–95th percentile trim on the retained estimates to remove
@@ -397,19 +471,18 @@ def calculate_other_process_rate(
           This prevents the forward-Euler simulation from producing a spurious
           upward trend (the simulation would otherwise converge to the
           beta=0 steady state p·C_out even as measured concentrations continue
-          to fall, producing a visible "step-change" at ~80–90 min post-shower).
+          to fall, producing a visible "step-change").
         - c_t <= 0 steps skipped (division by c_t unstable).
-        - DEPOSITION_WINDOW_HOURS (2.0): decay window length; 2 h is long
-          enough for measurable decay of larger bins and short enough to
-          avoid environmental drift dominating the signal.
 
     Parameters:
         particle_data (pd.DataFrame): DataFrame with particle concentrations
-        window_start (datetime): Start of deposition window (shower_off)
-        window_end (datetime): End of deposition window
-        bin_num (int): Particle bin number (0-6)
+        window_start (datetime): Start of the beta fit window (shower_off + 1 h)
+        window_end (datetime): End of the beta fit window (shower_off + 2 h)
+        bin_num (int): Particle bin number (0-11)
         p (float): Penetration factor
-        lambda_ach (float): Air change rate (h⁻¹)
+        lambda_ach (float): Air change rate (h⁻¹) — outside-source or
+            entry-source, per the caller; this function only ever sees one
+            scalar and is called once per source
     Returns:
         Dict: Dictionary with beta (R²-selected value; may be negative if
               step (a) succeeds, 0 if step (c) is reached, or NaN if step (d)
@@ -417,8 +490,8 @@ def calculate_other_process_rate(
               should be plotted), beta_raw_mean (unclamped trimmed mean),
               beta_std, beta_r_squared, beta_step ("a"/"b"/"c"/"d" indicating
               which selection step was accepted; NaN on early failure),
-              n_points, c_steady_state, and peak_time; or NaN values +
-              skip_reason on failure
+              n_points, and c_steady_state; or NaN values + skip_reason on
+              failure
     """
     bin_info = PARTICLE_BINS[bin_num]
     col_inside = f"{bin_info['column']}_inside"
@@ -432,55 +505,33 @@ def calculate_other_process_rate(
         "beta_step": np.nan,
         "n_points": 0,
         "c_steady_state": np.nan,
-        "peak_time": None,
     }
 
-    # Filter to full deposition window first
+    # Filter to the fixed beta fit window
     mask = (particle_data["datetime"] >= window_start) & (
         particle_data["datetime"] <= window_end
     )
-    window_data = particle_data[mask].copy()
-
-    if len(window_data) < MIN_POINTS_OTHER_PROCESS:
-        return {
-            **_nan_result,
-            "n_points": len(window_data),
-            "skip_reason": (
-                f"Insufficient data: {len(window_data)} points "
-                f"(minimum {MIN_POINTS_OTHER_PROCESS} required)"
-            ),
-        }
-
-    # Find peak concentration within the deposition window for this bin
-    c_inside_full = np.asarray(window_data[col_inside].values, dtype=np.float64)
-
-    valid_mask_full = ~np.isnan(c_inside_full)
-    if not np.any(valid_mask_full):
-        return {
-            **_nan_result,
-            "skip_reason": "No valid concentration data in window",
-        }
-
-    # Get peak index within the full window
-    peak_idx = np.nanargmax(c_inside_full)
-    peak_time = pd.Timestamp(window_data["datetime"].iloc[peak_idx])
-
-    # Filter data from peak to end of window for decay calculation
-    decay_data = window_data.iloc[peak_idx:].copy()
+    decay_data = particle_data[mask].copy()
 
     if len(decay_data) < MIN_POINTS_OTHER_PROCESS:
         return {
             **_nan_result,
             "n_points": len(decay_data),
-            "peak_time": peak_time,
             "skip_reason": (
-                f"Insufficient data after peak: {len(decay_data)} points "
+                f"Insufficient data: {len(decay_data)} points "
                 f"(minimum {MIN_POINTS_OTHER_PROCESS} required)"
             ),
         }
 
     c_inside = np.asarray(decay_data[col_inside].values, dtype=np.float64)
     c_outside = np.asarray(decay_data[col_outside].values, dtype=np.float64)
+
+    if not np.any(~np.isnan(c_inside)):
+        return {
+            **_nan_result,
+            "skip_reason": "No valid concentration data in window",
+        }
+
     c_outside_mean = float(np.nanmean(c_outside))
 
     # Numerical approach: solve for beta at each consecutive time step.
@@ -518,7 +569,6 @@ def calculate_other_process_rate(
         return {
             **_nan_result,
             "n_points": len(beta_raw),
-            "peak_time": peak_time,
             "skip_reason": (
                 f"Insufficient valid beta estimates: {len(beta_raw)} "
                 f"(minimum {MIN_POINTS_OTHER_PROCESS} required)"
@@ -606,7 +656,6 @@ def calculate_other_process_rate(
         "beta_step": beta_step,
         "n_points": len(beta_trimmed),
         "c_steady_state": float(c_steady_state),
-        "peak_time": peak_time,
     }
 
 

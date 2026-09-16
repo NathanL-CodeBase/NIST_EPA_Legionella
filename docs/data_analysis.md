@@ -72,12 +72,13 @@ Excluded events stay in the registry with `is_excluded = True`, a null event num
 
 **Duration-based exclusion.** Any shower event measuring outside 9 min 55 s to 10 min 5 s is treated as a manual water temperature verification run or a control-system test and excluded, with `exclusion_reason = "Water temperature testing (duration: X.X min)"`.
 
-**Predefined individual event exclusions.** Four events are excluded for documented confounding activity:
+**Predefined individual event exclusions.** Five events are excluded for documented confounding activity:
 
 | Date and time | Reason |
 |---|---|
 | 2026-01-22 15:00 | Tour in house during test |
 | 2026-01-29 15:00 | People in house |
+| 2026-04-09 15:00 | ACH much higher than expected for test configuration (test misconfigured) |
 | 2026-05-13 15:00 | LVP flooring installation |
 | 2026-05-21 15:00 | Bathroom flooring removal |
 
@@ -92,9 +93,9 @@ The last two are also permanent changes to the interior surfaces of the test roo
 | 2026-03-14 00:00 to 2026-03-15 12:00 | CO₂ injection system failure |
 | 2026-05-11 00:00 to 2026-05-15 10:00 | CO₂ injection system failure |
 
-**Aerosol analysis-specific exclusion.** Events whose CO₂ decay regression R² falls below 0.65 are excluded from aerosol analysis; the CO₂ result itself is retained. An unreliable λ propagates into the penetration factor, loss rate, and emission rate.
+**Poor-fit exclusion.** Events whose CO₂ decay regression R² falls below 0.75 are excluded from every analysis domain, CO₂ included (`scripts/event_registry.py`, `_apply_pm_exclusion_checks`; `is_excluded` is shared with the point and date-range exclusions in Section 2.8, so a poor fit removes the event everywhere, not just from aerosol analysis). This threshold now matches the draft report and `co2_decay_analysis.py`'s own `MIN_R_SQUARED` gate; the code previously applied 0.65 while its own docstrings and printed message said 0.75, corrected 2026-09-16.
 
-[CHECK: the threshold is 0.65 in code (`scripts/event_registry.py`, line 992). Three docstrings in that same file still state 0.75, including the printed exclusion message on line 997, and the draft report states 0.75. Confirm the intended threshold, then correct whichever of the three does not match.]
+The bedroom RH mixing check described in earlier drafts of this document has been removed. It is being replaced by a paired outside/entry air-change-rate bound computed from the particle decay window (Section 3.4.6); see that section for the current method.
 
 ---
 
@@ -395,7 +396,7 @@ For event-level RH time-series figures, sensors with limited relevance to the ba
 | Four predefined individual events | All analysis | `is_excluded = True`; retained in registry |
 | Four predefined date ranges | All analysis | `is_excluded = True`; retained in registry |
 | Initial CO₂ concentration excess below 50 ppm | CO₂ decay (λ) | Event excluded from λ only |
-| CO₂ decay regression R² below 0.65 | Aerosol analysis | CO₂ result retained; event excluded from aerosol analysis |
+| CO₂ decay regression R² below 0.75 | All analysis | `is_excluded = True`; event excluded from CO₂, aerosol, and RH/temp analysis alike |
 | Fewer than nine fleet monitors reporting at a minute | C_room | Minute dropped; no partial-fleet average |
 | Monitor not yet installed at event time | Fleet per-sensor exports and delta peak times | That monitor blank for that event; other monitors unaffected |
 | No continuous measurement over the 2 h after shower off | Aerosol loss rate | Bin excluded; primarily affects bins above 3.0 µm |

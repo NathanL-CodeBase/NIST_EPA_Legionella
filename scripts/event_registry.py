@@ -32,9 +32,7 @@ Processing Features:
       duration inferred from neighboring events or historical defaults
     - Duration-based exclusion of water-temperature-testing showers (outside
       10 min ± 5 sec); these events retain metadata but receive no event number
-    - Programmatic PM exclusion checks: lambda R² < 0.75 (unreliable CO2 fit)
-      and QuantAQ bedroom RH peak outside the first 45 min of the deposition
-      window (poor room mixing)
+    - Programmatic PM exclusion check: lambda R² < 0.75 (unreliable CO2 fit)
     - Consistent test name generation (W## water-temp codes, time-of-day,
       replicate suffix) matching the convention used in event_manager.py
 
@@ -49,13 +47,12 @@ Methodology:
        numbers and test names to matched CO2 events.
     6. Save an initial event_log.csv (without lambda values).
     7. Run CO2 decay analysis and update the registry with lambda values.
-    8. Apply programmatic PM exclusion checks (lambda R² and RH mixing).
+    8. Apply the programmatic PM exclusion check (lambda R²).
     9. Re-save the final event_log.csv with all exclusion flags populated.
 
 Input Files:
     - Shower log CSV (via load_shower_log from src.env_data_loader)
     - CO2 injection log CSV (via load_co2_injection_log from co2_decay_analysis)
-    - QuantAQ inside processed CSV files (met_rh column, for RH mixing check)
     - co2_lambda_summary.csv (output of co2_decay_analysis, for lambda values)
 
 Output Files:
@@ -729,6 +726,12 @@ def save_event_registry(
         lambda_mean = np.nan
         lambda_std = np.nan
         lambda_r_squared = np.nan
+        lambda_outside_mean = np.nan
+        lambda_outside_std = np.nan
+        lambda_outside_r_squared = np.nan
+        lambda_entry_mean = np.nan
+        lambda_entry_std = np.nan
+        lambda_entry_r_squared = np.nan
         co2_skip_reason = ""
 
         if co2_event is not None and not co2_results_df.empty:
@@ -751,6 +754,29 @@ def save_event_registry(
                         lambda_std = result_row["lambda_average_std (h-1)"]
                     if "lambda_average_r_squared" in result_row:
                         lambda_r_squared = result_row["lambda_average_r_squared"]
+                    # Outside-source and entry-source lambda, used by the particle
+                    # decay analysis to bound beta/emission/Ct instead of the
+                    # blended average above.
+                    if "lambda_outside_mean" in result_row:
+                        lambda_outside_mean = result_row["lambda_outside_mean"]
+                    elif "lambda_outside_mean (h-1)" in result_row:
+                        lambda_outside_mean = result_row["lambda_outside_mean (h-1)"]
+                    if "lambda_outside_std" in result_row:
+                        lambda_outside_std = result_row["lambda_outside_std"]
+                    elif "lambda_outside_std (h-1)" in result_row:
+                        lambda_outside_std = result_row["lambda_outside_std (h-1)"]
+                    if "lambda_outside_r_squared" in result_row:
+                        lambda_outside_r_squared = result_row["lambda_outside_r_squared"]
+                    if "lambda_entry_mean" in result_row:
+                        lambda_entry_mean = result_row["lambda_entry_mean"]
+                    elif "lambda_entry_mean (h-1)" in result_row:
+                        lambda_entry_mean = result_row["lambda_entry_mean (h-1)"]
+                    if "lambda_entry_std" in result_row:
+                        lambda_entry_std = result_row["lambda_entry_std"]
+                    elif "lambda_entry_std (h-1)" in result_row:
+                        lambda_entry_std = result_row["lambda_entry_std (h-1)"]
+                    if "lambda_entry_r_squared" in result_row:
+                        lambda_entry_r_squared = result_row["lambda_entry_r_squared"]
                     # Read CO2 analysis skip reason (data-quality failures not already
                     # captured as formal exclusions)
                     raw_skip = result_row.get("skip_reason", "")
@@ -789,6 +815,12 @@ def save_event_registry(
             "lambda_average_mean": lambda_mean,
             "lambda_average_std": lambda_std,
             "lambda_r_squared": lambda_r_squared,
+            "lambda_outside_mean": lambda_outside_mean,
+            "lambda_outside_std": lambda_outside_std,
+            "lambda_outside_r_squared": lambda_outside_r_squared,
+            "lambda_entry_mean": lambda_entry_mean,
+            "lambda_entry_std": lambda_entry_std,
+            "lambda_entry_r_squared": lambda_entry_r_squared,
             "is_excluded": is_excluded,
             "exclusion_reason": exclusion_reason or "",
             "co2_skip_reason": co2_skip_reason,
@@ -904,71 +936,22 @@ def run_co2_analysis_if_needed(output_dir: Path, force: bool = False) -> pd.Data
 # =============================================================================
 
 
-def _load_quantaq_inside_rh() -> pd.DataFrame:
-    """Load QuantAQ inside RH (met_rh) data from processed CSV files."""
-    from src.data_paths import get_instrument_path
-
-    try:
-        quantaq_path = get_instrument_path("QuantAQ_MODULAIR_PM")
-        files = sorted(quantaq_path.glob("*-quantaq-inside-processed.csv"))
-    except Exception:
-        return pd.DataFrame()
-
-    if not files:
-        return pd.DataFrame()
-
-    all_data = []
-    for filepath in files:
-        try:
-            df = pd.read_csv(filepath)
-            if "timestamp_local" in df.columns:
-                df["datetime"] = pd.to_datetime(df["timestamp_local"])
-            elif "timestamp" in df.columns:
-                df["datetime"] = pd.to_datetime(df["timestamp"])
-            else:
-                continue
-            if "met_rh" not in df.columns:
-                continue
-            all_data.append(df[["datetime", "met_rh"]])
-        except Exception:
-            pass
-
-    if not all_data:
-        return pd.DataFrame()
-
-    combined = pd.concat(all_data, ignore_index=True)
-    combined = combined.drop_duplicates(subset=["datetime"]).sort_values("datetime")
-    return combined.reset_index(drop=True)
-
-
 def _apply_pm_exclusion_checks(
     shower_events: List[Dict],
     co2_results_df: pd.DataFrame,
 ) -> None:
-    """Apply programmatic PM exclusion checks to shower events in-place.
+    """Apply the programmatic PM exclusion check to shower events in-place.
 
-    Two-stage check (only applied to non-excluded, numbered events):
-
-    Stage 1 — Lambda R² < 0.75:
+    Lambda R² < 0.75:
         The CO2 decay fit is too poor for reliable air-change-rate estimation,
         so PM analysis cannot be trusted.
 
-    Stage 2 — QuantAQ bedroom RH peak outside first 45 min of deposition window:
-        The bedroom is not well-mixed; particle concentrations may not represent
-        the whole-room average.
-
     Modifies ``shower_events`` in-place: sets ``is_excluded = True`` and
-    ``exclusion_reason`` on any event that fails either check.
+    ``exclusion_reason`` on any event that fails the check.
     """
-    print("\nApplying programmatic PM exclusion checks...")
-
-    # Load QuantAQ inside RH data once for all events
-    rh_data = _load_quantaq_inside_rh()
-    if rh_data.empty:
-        print("  Warning: No QuantAQ inside RH data found; skipping RH mixing check.")
+    print("\nApplying programmatic PM exclusion check...")
 
     n_lambda_excluded = 0
-    n_rh_excluded = 0
 
     for event in shower_events:
         # Only check non-excluded events that have an event number
@@ -976,9 +959,8 @@ def _apply_pm_exclusion_checks(
             continue
 
         shower_on = event["shower_on"]
-        shower_off = event["shower_off"]
 
-        # --- Stage 1: Lambda R² check ---
+        # --- Lambda R² check ---
         lambda_r2 = np.nan
         if not co2_results_df.empty and "injection_start" in co2_results_df.columns:
             expected_injection = shower_on - timedelta(minutes=EXPECTED_CO2_BEFORE_SHOWER)
@@ -989,58 +971,15 @@ def _apply_pm_exclusion_checks(
                 result_row = co2_results_df.loc[time_diffs.idxmin()]
                 lambda_r2 = result_row.get("lambda_average_r_squared", np.nan)
 
-        if not np.isnan(lambda_r2) and lambda_r2 < 0.65:
+        if not np.isnan(lambda_r2) and lambda_r2 < 0.75:
             event["is_excluded"] = True
-            event["exclusion_reason"] = f"Lambda R\u00b2 less than 0.65 (R\u00b2={lambda_r2:.3f})"
+            event["exclusion_reason"] = f"Lambda R\u00b2 less than 0.75 (R\u00b2={lambda_r2:.3f})"
             n_lambda_excluded += 1
             print(
-                f"  Event {event.get('event_number')}: Excluded — lambda R²={lambda_r2:.3f} < 0.75"
-            )
-            continue
-
-        # --- Stage 2: QuantAQ bedroom RH mixing check ---
-        if rh_data.empty:
-            continue
-
-        # When the bath door is closed or ajar, steam cannot propagate
-        # easily to the bedroom QuantAQ sensor, so the RH peak will
-        # naturally be delayed.  Skip the check and note the reason.
-        bath_door = event.get("door_position", "Open")
-        if bath_door in ("Closed", "Ajar"):
-            event["exclusion_reason"] = f"RH mixing check skipped: bath door {bath_door.lower()}"
-            continue
-
-        rh_window_end = shower_off + timedelta(hours=2)
-        mask = (rh_data["datetime"] >= shower_off) & (rh_data["datetime"] <= rh_window_end)
-        rh_window = rh_data[mask]
-
-        if rh_window.empty:
-            continue
-
-        peak_idx = rh_window["met_rh"].idxmax()
-        # Check if peak_idx is valid (not NaN) before accessing
-        if pd.isna(peak_idx):
-            # All met_rh values are NaN, skip RH mixing check
-            continue
-        peak_time = rh_window.loc[peak_idx, "datetime"]
-        minutes_after = (peak_time - shower_off).total_seconds() / 60
-
-        if peak_time > shower_off + timedelta(minutes=45):
-            event["is_excluded"] = True
-            event["exclusion_reason"] = (
-                f"Bedroom is deemed to be not well mixed by RH analysis "
-                f"(RH peak at {minutes_after:.0f} min after shower off, "
-                f"expected within 45 min)"
-            )
-            n_rh_excluded += 1
-            print(
-                f"  Event {event.get('event_number')}: Excluded — "
-                f"RH peak at {minutes_after:.0f} min after shower off"
+                f"  Event {event.get('event_number')}: Excluded - lambda R\u00b2={lambda_r2:.3f} < 0.75"
             )
 
-    print(f"  Lambda R² exclusions: {n_lambda_excluded}")
-    print(f"  RH mixing exclusions: {n_rh_excluded}")
-    print(f"  Total new exclusions: {n_lambda_excluded + n_rh_excluded}")
+    print(f"  Lambda R\u00b2 exclusions: {n_lambda_excluded}")
 
 
 def main():
@@ -1150,7 +1089,7 @@ def main():
                 unified_showers, unified_co2, co2_results_df, registry_path
             )
 
-            # STEP 7: Apply programmatic PM exclusion checks (lambda R² and RH mixing)
+            # STEP 7: Apply the programmatic PM exclusion check (lambda R²)
             _apply_pm_exclusion_checks(unified_showers, co2_results_df)
 
             # STEP 8: Re-save event log with updated exclusion flags

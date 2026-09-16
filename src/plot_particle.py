@@ -112,16 +112,19 @@ def plot_particle_decay_event(
 
     Top panel (ax1) — concentration time series:
       - Measured indoor particle concentrations for all bins
-      - Continuous predicted Ct curve per valid bin (emission + decay phases)
+      - Two continuous predicted Ct curves per valid bin (emission + decay
+        phases), one per air-change-rate source: outside (dashed) and entry
+        (dotted), bracketing the measured curve instead of a single blend
       - Shower ON/OFF markers and shaded deposition window
       - Optional outdoor PM overlay (when show_outdoor=True): plots
         opc_binN_outside columns using the same per-bin colours with
         reduced alpha and dotted lines
 
     Bottom panels (ax2–ax4) — per-step emission rates by bin group:
-      - Per-step E_t values as faint lines for each valid bin
-      - E_mean as a horizontal dashed line spanning shower_on to peak_time
-      - Emission R² annotation in each panel
+      - Per-step E_t values as faint lines for each valid bin, both sources
+      - E_mean as a horizontal line spanning shower_on to peak_time, dashed
+        for the outside source and dotted for the entry source
+      - Emission R² annotation in each panel, per source
 
     Parameters:
         particle_data: DataFrame with particle concentrations
@@ -151,7 +154,12 @@ def plot_particle_decay_event(
     fig, axes_array = create_figure(nrows=4, ncols=1, figsize=(12, 14), height_ratios=[2, 1, 1, 1])
     ax1, ax2, ax3, ax4 = cast(np.ndarray, axes_array)
 
-    lambda_ach = result.get("lambda_ach", np.nan)
+    lambda_outside = result.get("lambda_outside", np.nan)
+    lambda_entry = result.get("lambda_entry", np.nan)
+    # Outside/entry line styles used throughout this figure: dashed brackets
+    # the measured curve from above, dotted from below (or vice versa),
+    # same bin color for both.
+    _SOURCE_LINESTYLE = {"outside": "--", "entry": ":"}
 
     # =========================================================================
     # Top panel: Particle concentrations with decay predictions
@@ -173,52 +181,58 @@ def plot_particle_decay_event(
             )
 
             # Plot continuous predicted Ct: emission phase then decay phase
-            # as two segments of the same simulation (they connect at peak_time)
-            emission_dts = result.get(f"bin{bin_num}_emission_datetimes", [])
-            emission_pred = result.get(f"bin{bin_num}_emission_predicted", [])
-            decay_dts = result.get(f"bin{bin_num}_decay_datetimes", [])
-            decay_pred = result.get(f"bin{bin_num}_decay_predicted", [])
+            # as two segments of the same simulation (they connect at peak_time).
+            # Each bin carries two predictions, one per lambda source (outside,
+            # entry), bracketing the measured curve rather than a single blend.
+            for source, linestyle in _SOURCE_LINESTYLE.items():
+                prefix = f"bin{bin_num}_{source}"
+                emission_dts = result.get(f"{prefix}_emission_datetimes", [])
+                emission_pred = result.get(f"{prefix}_emission_predicted", [])
+                decay_dts = result.get(f"{prefix}_decay_datetimes", [])
+                decay_pred = result.get(f"{prefix}_decay_predicted", [])
 
-            if len(emission_dts) > 0 and len(emission_pred) > 0:
-                ep_arr = np.array(emission_pred, dtype=float)
-                ep_arr = np.where(ep_arr > 0, ep_arr, np.nan)
-                if np.any(np.isfinite(ep_arr)):
-                    ax1.plot(
-                        pd.to_datetime(emission_dts),
-                        ep_arr,
-                        color=color,
-                        linewidth=LINE_WIDTH_FIT,
-                        linestyle="--",
-                        alpha=0.8,
-                    )
-            if len(decay_dts) > 0 and len(decay_pred) > 0:
-                dp_arr = np.array(decay_pred, dtype=float)
-                dp_arr = np.where(dp_arr > 0, dp_arr, np.nan)
-                if np.any(np.isfinite(dp_arr)):
-                    ax1.plot(
-                        pd.to_datetime(decay_dts),
-                        dp_arr,
-                        color=color,
-                        linewidth=LINE_WIDTH_FIT,
-                        linestyle="--",
-                        alpha=0.8,
-                    )
+                if len(emission_dts) > 0 and len(emission_pred) > 0:
+                    ep_arr = np.array(emission_pred, dtype=float)
+                    ep_arr = np.where(ep_arr > 0, ep_arr, np.nan)
+                    if np.any(np.isfinite(ep_arr)):
+                        ax1.plot(
+                            pd.to_datetime(emission_dts),
+                            ep_arr,
+                            color=color,
+                            linewidth=LINE_WIDTH_FIT,
+                            linestyle=linestyle,
+                            alpha=0.8,
+                        )
+                if len(decay_dts) > 0 and len(decay_pred) > 0:
+                    dp_arr = np.array(decay_pred, dtype=float)
+                    dp_arr = np.where(dp_arr > 0, dp_arr, np.nan)
+                    if np.any(np.isfinite(dp_arr)):
+                        ax1.plot(
+                            pd.to_datetime(decay_dts),
+                            dp_arr,
+                            color=color,
+                            linewidth=LINE_WIDTH_FIT,
+                            linestyle=linestyle,
+                            alpha=0.8,
+                        )
 
-    # Add single legend entry for predicted Ct lines
+    # Add legend entries for the two predicted Ct lines (one per source)
     has_predictions = any(
-        len(result.get(f"bin{bn}_emission_predicted", [])) > 0
-        or len(result.get(f"bin{bn}_decay_predicted", [])) > 0
+        len(result.get(f"bin{bn}_{source}_emission_predicted", [])) > 0
+        or len(result.get(f"bin{bn}_{source}_decay_predicted", [])) > 0
         for bn in particle_bins.keys()
+        for source in _SOURCE_LINESTYLE
     )
     if has_predictions:
-        ax1.plot(
-            [],
-            [],
-            color="gray",
-            linestyle="--",
-            linewidth=LINE_WIDTH_FIT,
-            label="Predicted Ct",
-        )
+        for source, linestyle in _SOURCE_LINESTYLE.items():
+            ax1.plot(
+                [],
+                [],
+                color="gray",
+                linestyle=linestyle,
+                linewidth=LINE_WIDTH_FIT,
+                label=f"Predicted Ct ({source})",
+            )
 
     # Optional outdoor PM concentration overlay
     if show_outdoor:
@@ -276,19 +290,32 @@ def plot_particle_decay_event(
         )
     ax1.set_title(title, fontsize=FONT_SIZE_TITLE, fontweight=TITLE_FONTWEIGHT)
 
-    # Count valid bins and build decay R² summary for the text box
+    # Count valid bins (valid in at least one source) and build a per-bin,
+    # per-source decay R² summary for the text box
     valid_bins = 0
     decay_r2_lines = []
     for bin_num in particle_bins.keys():
-        beta_val = result.get(f"bin{bin_num}_beta_other", np.nan)
-        if not np.isnan(beta_val):
+        source_r2 = {}
+        bin_valid = False
+        for source in _SOURCE_LINESTYLE:
+            beta_val = result.get(f"bin{bin_num}_{source}_beta_other", np.nan)
+            if not np.isnan(beta_val):
+                bin_valid = True
+                r2_val = result.get(f"bin{bin_num}_{source}_beta_other_r_squared", np.nan)
+                source_r2[source] = (
+                    sf.fmt_fig(r2_val, fallback=".3f") if not np.isnan(r2_val) else "N/A"
+                )
+        if bin_valid:
             valid_bins += 1
-            r2_val = result.get(f"bin{bin_num}_beta_other_r_squared", np.nan)
-            r2_str = sf.fmt_fig(r2_val, fallback=".3f") if not np.isnan(r2_val) else "N/A"
-            decay_r2_lines.append(f" B{bin_num}: R²={r2_str}")
+            r2_text = ", ".join(f"{s}={v}" for s, v in source_r2.items())
+            decay_r2_lines.append(f" B{bin_num}: R²({r2_text})")
 
-    # Build text box content: lambda, valid-bin count, and per-bin decay R²
-    textstr = f"λ = {sf.fmt_fig(lambda_ach, fallback='.4f')} h⁻¹\n"
+    # Build text box content: lambda (both sources), valid-bin count, and
+    # per-bin decay R²
+    textstr = (
+        f"λ_outside = {sf.fmt_fig(lambda_outside, fallback='.4f')} h⁻¹\n"
+        f"λ_entry = {sf.fmt_fig(lambda_entry, fallback='.4f')} h⁻¹\n"
+    )
     if decay_r2_lines:
         textstr += "\nDecay R²:\n" + "\n".join(decay_r2_lines)
 
@@ -316,14 +343,18 @@ def plot_particle_decay_event(
         if _col in plot_data.columns:
             _vals = plot_data[_col].dropna().values
             _all_pos_y.extend(_vals[_vals > 0].tolist())
-        for _key in (f"bin{_bn}_emission_predicted", f"bin{_bn}_decay_predicted"):
-            _all_pos_y.extend(
-                [
-                    v
-                    for v in result.get(_key, [])
-                    if isinstance(v, (int, float)) and v > 0 and not np.isnan(v)
-                ]
-            )
+        for _source in _SOURCE_LINESTYLE:
+            for _key in (
+                f"bin{_bn}_{_source}_emission_predicted",
+                f"bin{_bn}_{_source}_decay_predicted",
+            ):
+                _all_pos_y.extend(
+                    [
+                        v
+                        for v in result.get(_key, [])
+                        if isinstance(v, (int, float)) and v > 0 and not np.isnan(v)
+                    ]
+                )
     ax1.set_yscale("log")
     if _all_pos_y:
         _ylo = min(_all_pos_y) * 0.3
@@ -361,7 +392,7 @@ def plot_particle_decay_event(
     )
 
     def _populate_emission_panel(ax, bin_group, panel_label):
-        """Plot E_per_step scatter and E_mean dashed line for a subset of bins."""
+        """Plot E_per_step scatter and E_mean line (per source) for a subset of bins."""
         has_data = False
         r2_lines = []
         e_steps_panel = []
@@ -370,40 +401,49 @@ def plot_particle_decay_event(
         for bin_num in bin_group:
             bin_info = particle_bins[bin_num]
             color = SENSOR_COLORS[bin_num % len(SENSOR_COLORS)]
-
-            E_times = result.get(f"bin{bin_num}_E_times", [])
-            E_per_step = result.get(f"bin{bin_num}_E_per_step", [])
-            E_mean_val = result.get(f"bin{bin_num}_E_mean", np.nan)
-            E_r2_val = result.get(f"bin{bin_num}_E_r_squared", np.nan)
             peak_time = result.get(f"bin{bin_num}_peak_time", None)
+            source_r2 = {}
 
-            if len(E_times) > 0 and len(E_per_step) > 0:
-                has_data = True
-                e_steps_panel.extend(E_per_step)
-                # Per-step E_t as a faint line (all values, including negative)
-                ax.plot(
-                    pd.to_datetime(E_times),
-                    np.array(E_per_step),
-                    color=color,
-                    linewidth=0.8,
-                    alpha=0.35,
-                )
+            for source, linestyle in _SOURCE_LINESTYLE.items():
+                prefix = f"bin{bin_num}_{source}"
+                E_times = result.get(f"{prefix}_E_times", [])
+                E_per_step = result.get(f"{prefix}_E_per_step", [])
+                E_mean_val = result.get(f"{prefix}_E_mean", np.nan)
+                E_r2_val = result.get(f"{prefix}_E_r_squared", np.nan)
 
-            # E_mean as horizontal dashed line spanning shower_on → peak_time
-            if not np.isnan(E_mean_val) and peak_time is not None:
-                has_data = True
-                e_means_panel.append(E_mean_val)
-                ax.hlines(
-                    E_mean_val,
-                    event["shower_on"],
-                    pd.Timestamp(peak_time),
-                    color=color,
-                    linewidth=LINE_WIDTH_FIT,
-                    linestyle="--",
-                    alpha=0.9,
-                )
-                r2_str = sf.fmt_fig(E_r2_val, fallback=".3f") if not np.isnan(E_r2_val) else "N/A"
-                r2_lines.append(f"B{bin_num}: R²={r2_str}")
+                if len(E_times) > 0 and len(E_per_step) > 0:
+                    has_data = True
+                    e_steps_panel.extend(E_per_step)
+                    # Per-step E_t as a faint line (all values, including negative)
+                    ax.plot(
+                        pd.to_datetime(E_times),
+                        np.array(E_per_step),
+                        color=color,
+                        linewidth=0.8,
+                        alpha=0.35,
+                    )
+
+                # E_mean as a horizontal line spanning shower_on -> peak_time,
+                # dashed for outside / dotted for entry (matches top panel)
+                if not np.isnan(E_mean_val) and peak_time is not None:
+                    has_data = True
+                    e_means_panel.append(E_mean_val)
+                    ax.hlines(
+                        E_mean_val,
+                        event["shower_on"],
+                        pd.Timestamp(peak_time),
+                        color=color,
+                        linewidth=LINE_WIDTH_FIT,
+                        linestyle=linestyle,
+                        alpha=0.9,
+                    )
+                    source_r2[source] = (
+                        sf.fmt_fig(E_r2_val, fallback=".3f") if not np.isnan(E_r2_val) else "N/A"
+                    )
+
+            if source_r2:
+                r2_text = ", ".join(f"{s}={v}" for s, v in source_r2.items())
+                r2_lines.append(f"B{bin_num}: R²({r2_text})")
 
         add_shower_on_marker(ax, event["shower_on"])
         add_shower_off_marker(ax, event["shower_off"])
@@ -463,7 +503,9 @@ def plot_particle_decay_event(
 
 
 # Configuration for the three per-bin summary bar charts.
-# Keys: col_template, ylabel, title, label_fmt, label_offset, ylim, log_scale
+# Keys: col_template, ylabel, title, label_fmt, label_offset, ylim, log_scale,
+#       has_source (bool — True for metrics computed once per lambda source;
+#       col_template includes a {source} placeholder for those entries).
 _BAR_CHART_CONFIG = {
     "penetration": dict(
         col_template="bin{n}_p_mean",
@@ -473,24 +515,27 @@ _BAR_CHART_CONFIG = {
         label_offset=0.02,
         ylim=(0, 1.1),
         log_scale=False,
+        has_source=False,
     ),
     "deposition": dict(
-        col_template="bin{n}_beta_other",
+        col_template="bin{n}_{source}_beta_other",
         ylabel="Other Process Rate β (h⁻¹)",
         title="Other Process Rate by Particle Size\n(Mean ± Std Dev)",
         label_fmt=".2f",
         label_offset=0.1,
         ylim=None,
         log_scale=False,
+        has_source=True,
     ),
     "emission": dict(
-        col_template="bin{n}_E_mean",
+        col_template="bin{n}_{source}_E_mean",
         ylabel="Emission Rate E (#/min)",
         title="Shower Emission Rate by Particle Size\n(Mean ± Std Dev)",
         label_fmt=".1e",
         label_offset=0,
         ylim=None,
         log_scale="auto",
+        has_source=True,
     ),
 }
 
@@ -506,7 +551,10 @@ def _plot_summary_bar_chart(
 
     Handles all three metric types (penetration, other process, emission) via a
     configuration dict.  If config_key is present, creates one subplot per
-    configuration; otherwise draws a single panel.
+    configuration; otherwise draws a single panel. Lambda-dependent metrics
+    (``cfg["has_source"]``) are drawn twice, once per air-change-rate source,
+    with an ``_outside``/``_entry`` suffix appended to the output filename;
+    source-independent metrics (penetration factor) are drawn once.
 
     Parameters:
         results_df: DataFrame with analysis results.
@@ -528,6 +576,28 @@ def _plot_summary_bar_chart(
     else:
         config_keys = ["All"]
         n_configs = 1
+
+    sources = ("outside", "entry") if cfg.get("has_source", True) else (None,)
+    for source in sources:
+        _plot_summary_bar_chart_one_source(
+            results_df, particle_bins, output_path, cfg, config_keys, n_configs, source
+        )
+
+
+def _plot_summary_bar_chart_one_source(
+    results_df: pd.DataFrame,
+    particle_bins: Dict,
+    output_path: Path,
+    cfg: dict,
+    config_keys: list,
+    n_configs: int,
+    source: "Optional[str]",
+) -> None:
+    """Draw one summary bar chart (all configs/subplots) for a single lambda source."""
+    bin_nums = list(particle_bins.keys())
+    bin_labels = [particle_bins[i]["name"] for i in bin_nums]
+    has_config = "config_key" in results_df.columns
+    source_note = f" ({source} source)" if source else ""
 
     # Scale figure width with bin count (at least 1.4 in per bin, min 14 in wide)
     fig_width = max(14, len(bin_nums) * 1.4)
@@ -554,7 +624,7 @@ def _plot_summary_bar_chart(
         means = []
         stds = []
         for bin_num in bin_nums:
-            col = cfg["col_template"].format(n=bin_num)
+            col = cfg["col_template"].format(n=bin_num, source=source)
             valid_values = config_df[col].dropna() if col in config_df.columns else pd.Series([], dtype=float)
             means.append(valid_values.mean() if len(valid_values) > 0 else np.nan)
             stds.append(valid_values.std() if len(valid_values) > 0 else np.nan)
@@ -586,12 +656,14 @@ def _plot_summary_bar_chart(
         ax.set_ylabel(cfg["ylabel"], fontsize=FONT_SIZE_LABEL)
         if n_configs > 1:
             ax.set_title(
-                f"Configuration: {config_key} (n={len(config_df)})",
+                f"Configuration: {config_key} (n={len(config_df)}){source_note}",
                 fontsize=FONT_SIZE_TITLE,
                 fontweight=TITLE_FONTWEIGHT,
             )
         else:
-            ax.set_title(cfg["title"], fontsize=FONT_SIZE_TITLE, fontweight=TITLE_FONTWEIGHT)
+            ax.set_title(
+                cfg["title"] + source_note, fontsize=FONT_SIZE_TITLE, fontweight=TITLE_FONTWEIGHT
+            )
 
         ax.set_xticks(x)
         ax.set_xticklabels(bin_labels, rotation=45, ha="right", fontsize=FONT_SIZE_TICK - 1)
@@ -608,13 +680,18 @@ def _plot_summary_bar_chart(
 
     if n_configs > 1:
         fig.suptitle(
-            cfg["title"],
+            cfg["title"] + source_note,
             fontsize=FONT_SIZE_TITLE + 2,
             fontweight=TITLE_FONTWEIGHT,
         )
 
+    source_output = (
+        output_path.parent / f"{output_path.stem}_{source}{output_path.suffix}"
+        if source
+        else output_path
+    )
     plt.tight_layout(pad=2.0)
-    save_figure(fig, output_path)
+    save_figure(fig, source_output)
     plt.close(fig)
 
 
@@ -661,14 +738,21 @@ def plot_size_distribution_summary(
     results_df: pd.DataFrame,
     particle_bins: Dict,
     output_path: Path,
+    source: str,
 ) -> None:
     """
     Create multi-panel figure showing all three metrics vs particle size.
 
+    Panel (a) penetration factor is lambda-independent and identical across
+    calls. Panels (b) other process rate and (c) emission rate are
+    lambda-dependent, so the caller invokes this once per air-change-rate
+    source; the output filename gets an ``_outside``/``_entry`` suffix.
+
     Parameters:
         results_df: DataFrame with analysis results
         particle_bins: Dictionary of particle bin information
-        output_path: Path to save the figure
+        output_path: Path to save the figure (suffixed with ``_{source}``)
+        source: Air-change-rate source for panels (b)/(c): "outside" or "entry"
     """
     apply_style()
 
@@ -678,7 +762,7 @@ def plot_size_distribution_summary(
     fig, axes_temp = create_figure(nrows=1, ncols=3, figsize=(15, 5))
     axes = cast(np.ndarray, axes_temp)
 
-    # Panel 1: Penetration factor
+    # Panel 1: Penetration factor (lambda-independent, shared across sources)
     p_means = []
     p_stds = []
     for bin_num in bin_nums:
@@ -705,12 +789,12 @@ def plot_size_distribution_summary(
     axes[0].grid(True, alpha=0.3)
     axes[0].set_ylim(0, 1.1)
 
-    # Panel 2: Other Process Rate
+    # Panel 2: Other Process Rate (this source)
     beta_means = []
     beta_stds = []
     for bin_num in bin_nums:
-        col = f"bin{bin_num}_beta"
-        valid_values = results_df[col].dropna()
+        col = f"bin{bin_num}_{source}_beta_other"
+        valid_values = results_df[col].dropna() if col in results_df.columns else pd.Series([], dtype=float)
         beta_means.append(valid_values.mean() if len(valid_values) > 0 else np.nan)
         beta_stds.append(valid_values.std() if len(valid_values) > 0 else np.nan)
 
@@ -727,16 +811,16 @@ def plot_size_distribution_summary(
     axes[1].set_xlabel("Particle Size (µm)", fontsize=FONT_SIZE_LABEL)
     axes[1].set_ylabel("Other Process Rate β (h⁻¹)", fontsize=FONT_SIZE_LABEL)
     axes[1].set_title(
-        "(b) Other Process Rate", fontsize=FONT_SIZE_TITLE, fontweight=TITLE_FONTWEIGHT
+        f"(b) Other Process Rate ({source})", fontsize=FONT_SIZE_TITLE, fontweight=TITLE_FONTWEIGHT
     )
     axes[1].grid(True, alpha=0.3)
 
-    # Panel 3: Emission rate
+    # Panel 3: Emission rate (this source)
     E_means = []
     E_stds = []
     for bin_num in bin_nums:
-        col = f"bin{bin_num}_E_mean"
-        valid_values = results_df[col].dropna()
+        col = f"bin{bin_num}_{source}_E_mean"
+        valid_values = results_df[col].dropna() if col in results_df.columns else pd.Series([], dtype=float)
         E_means.append(valid_values.mean() if len(valid_values) > 0 else np.nan)
         E_stds.append(valid_values.std() if len(valid_values) > 0 else np.nan)
 
@@ -752,7 +836,9 @@ def plot_size_distribution_summary(
     )
     axes[2].set_xlabel("Particle Size (µm)", fontsize=FONT_SIZE_LABEL)
     axes[2].set_ylabel("Emission Rate E (#/min)", fontsize=FONT_SIZE_LABEL)
-    axes[2].set_title("(c) Emission Rate", fontsize=FONT_SIZE_TITLE, fontweight=TITLE_FONTWEIGHT)
+    axes[2].set_title(
+        f"(c) Emission Rate ({source})", fontsize=FONT_SIZE_TITLE, fontweight=TITLE_FONTWEIGHT
+    )
     axes[2].grid(True, alpha=0.3)
 
     # Apply log scale if needed
@@ -764,8 +850,9 @@ def plot_size_distribution_summary(
     for ax in axes:
         ax.tick_params(labelsize=FONT_SIZE_TICK)
 
+    source_output = output_path.parent / f"{output_path.stem}_{source}{output_path.suffix}"
     plt.tight_layout()
-    save_figure(fig, output_path)
+    save_figure(fig, source_output)
     plt.close(fig)
 
 

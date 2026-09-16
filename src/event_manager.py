@@ -62,7 +62,8 @@ Methodology:
     4. Detect showers without a matching CO2 event (within ±10 min)
     5. Optionally create synthetic CO2 events for unmatched showers
     6. Match each non-excluded shower event to its CO2 event; attach
-       lambda_ach and co2_event_idx to the shower event dict
+       lambda_outside_mean, lambda_entry_mean, and co2_event_idx to the
+       shower event dict
 
 Input Files:
     - None (all data passed as function arguments: lists of event dicts and
@@ -367,6 +368,7 @@ TIME_OF_DAY_RANGES = {
 EXCLUDED_EVENTS = {
     datetime(2026, 1, 22, 15, 0, 0): "Tour in house during test",
     datetime(2026, 1, 29, 15, 0, 0): "People in house",
+    datetime(2026, 4, 9, 15, 0, 0): "ACH much higher than expected for test configuration (test misconfigured)",
     datetime(2026, 5, 13, 15, 0, 0): "LVP flooring installation",
     datetime(2026, 5, 21, 15, 0, 0): "Bathroom flooring removal",
 }
@@ -1329,16 +1331,29 @@ def process_events_with_management(
 
             matched_pairs[i] = co2_idx
 
-            # Add lambda value if available (handle both old and new column names)
-            lambda_col = None
-            if "lambda_average_mean" in co2_results_df.columns:
-                lambda_col = "lambda_average_mean"
-            elif "lambda_average_mean (h-1)" in co2_results_df.columns:
-                lambda_col = "lambda_average_mean (h-1)"
+            # Add outside/entry lambda values if available (handle both old and
+            # new column names). Particle analysis bounds beta/emission/Ct with
+            # these two sources rather than the blended average.
+            def _find_lambda_col(base: str) -> Optional[str]:
+                if base in co2_results_df.columns:
+                    return base
+                unit_suffixed = f"{base} (h-1)"
+                if unit_suffixed in co2_results_df.columns:
+                    return unit_suffixed
+                return None
 
-            if co2_idx is not None and lambda_col is not None:
-                lambda_val = co2_results_df.iloc[co2_idx][lambda_col]
-                shower_event["lambda_ach"] = lambda_val
+            outside_col = _find_lambda_col("lambda_outside_mean")
+            entry_col = _find_lambda_col("lambda_entry_mean")
+
+            if co2_idx is not None:
+                if outside_col is not None:
+                    shower_event["lambda_outside_mean"] = co2_results_df.iloc[co2_idx][
+                        outside_col
+                    ]
+                if entry_col is not None:
+                    shower_event["lambda_entry_mean"] = co2_results_df.iloc[co2_idx][
+                        entry_col
+                    ]
                 shower_event["co2_event_idx"] = co2_idx
 
         print(
