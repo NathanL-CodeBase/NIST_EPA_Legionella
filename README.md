@@ -12,6 +12,12 @@ This project analyzes aerosol characteristics from shower-generated aerosols wit
 - Temperature and relative humidity monitoring
 - data validation, visualization, and statistical modeling
 
+A second, related line of analysis (the `moduair_*` scripts and `src/moduair_loader.py`)
+compares the study's two QuantAQ MODULAIR-PM sensors against the broader NIST
+IAQ&V group's fleet of co-located MODULAIR-PM units, to characterize sensor
+agreement and build candidate inter-sensor correction factors. See
+[MODULAIR-PM Fleet Comparison](#modulair-pm-fleet-comparison-iaqv) below.
+
 ## Disclaimer
 
 Certain commercial equipment, instruments, software, or materials are identified in this repository in order to specify the experimental and analytical procedures adequately. Such identification is not intended to imply recommendation or endorsement of any product or service by NIST, nor is it intended to imply that the materials or equipment identified are necessarily the best available for the purpose.
@@ -77,6 +83,7 @@ NIST_EPA_Legionella/
 │   ├── plot_utils.py                 # Central plotting re-exports (imports all plot_* modules)
 │   ├── quantaq_utils.py              # QuantAQ API client utilities
 │   ├── sig_figs.py                   # Significant figures rounding and formatting
+│   ├── moduair_loader.py             # IAQ&V MODULAIR-PM fleet chunk loader (moduair_pm_chunks share)
 │   └── deprecated/                   # Deprecated/archived code
 │       └── co2_decay_analysis.py     # Previous version of CO2 analysis
 │
@@ -84,7 +91,7 @@ NIST_EPA_Legionella/
 │   ├── __init__.py
 │   │
 │   │ # Data Download & Processing
-│   ├── download_quantaq_data.py      # Download QuantAQ sensor data from API
+│   ├── download_quantaq_data.py      # Download QuantAQ sensor data from API (manual/one-off; campaign ended 2026-07-16)
 │   ├── process_quantaq_data.py       # Combine weekly chunks and process raw/final QuantAQ data
 │   │
 │   │ # Log Processing
@@ -98,10 +105,21 @@ NIST_EPA_Legionella/
 │   │
 │   │ # Analysis
 │   ├── co2_decay_analysis.py         # CO2 decay & air change rate (λ) analysis
-│   ├── particle_decay_analysis.py    # Particle penetration, deposition & emission analysis
+│   ├── particle_decay_analysis.py    # Particle penetration, deposition & emission analysis (bounded by λ_outside/λ_entry)
 │   ├── rh_temp_other_analysis.py     # RH, temperature & wind condition analysis
 │   ├── export_event_timeseries.py    # Export per-event predicted Ct for all size bins to CSV (--event N)
-│   └── export_config_timeseries.py   # Export 1-min avg env/particle time series per config group to Excel
+│   ├── export_config_timeseries.py   # Export 1-min avg env/particle time series per config group to Excel
+│   │
+│   │ # Optional Figures
+│   ├── co2_lambda_source_figure.py   # Per-event λ_outside vs. λ_entry comparison figure with paired t-test
+│   ├── hobo_onset_decay_figures.py   # HOBO temp/RH onset & decay figures, plus per-event pre/post summary
+│   │
+│   │ # MODULAIR-PM Fleet Comparison (IAQ&V) — see README section below
+│   ├── moduair_correction_factor.py  # Inter-sensor concentration ratios + 195/813 Deming correction fit
+│   ├── moduair_event_peak_times.py   # Per-event, per-sensor delta peak time (shower ON to peak)
+│   ├── moduair_bin2_timeseries.py    # Per-bin time series across co-located bedroom fleet sensors
+│   ├── moduair_cave_ratio.py         # Inside sensor (195) vs. position-weighted fleet average (C_room)
+│   └── export_config_timeseries_fleet.py  # Per-sensor variant of export_config_timeseries.py across the fleet
 │
 └── docs/                             # Documentation & instrument references
     ├── Data Analysis.docx            # Data analysis planning notes
@@ -162,7 +180,11 @@ files = get_instrument_files_for_date_range("QuantAQ", "2026-01-05", "2026-01-15
 
 ### QuantAQ Data Pipeline
 
-1. **Download data** from the QuantAQ API:
+The experimental campaign ended 2026-07-16; the local QuantAQ cache is complete and
+frozen, so step 1 below is a manual/one-off tool, not something to re-run routinely.
+
+1. **Download data** from the QuantAQ API *(manual, one-off — only needed to rebuild
+   a lost/missing local cache)*:
    ```bash
    python scripts/download_quantaq_data.py
    ```
@@ -211,23 +233,26 @@ python run_analysis_workflow.py
 ```
 Each step's output is logged to `output/logs/<script_name>.log`. Or run steps individually:
 
-1. **Data Collection**: Download sensor data from the QuantAQ API
-   ```bash
-   python scripts/download_quantaq_data.py
-   ```
+> **Data collection is complete.** The experimental campaign ended 2026-07-16
+> (`PROJECT_END_DATE` in `download_quantaq_data.py`), so `download_quantaq_data.py`
+> is no longer part of the routine pipeline in `run_analysis_workflow.py`. Run it
+> manually, one-off, only if the local QuantAQ `chunks/` cache needs to be rebuilt:
+> ```bash
+> python scripts/download_quantaq_data.py
+> ```
 
-2. **Data Processing**: Process and merge raw QuantAQ sensor data
+1. **Data Processing**: Process and merge raw QuantAQ sensor data
    ```bash
    python scripts/process_quantaq_data.py
    ```
 
-3. **Log Processing**: Consolidate daily 1-second log files into state-change logs
+2. **Log Processing**: Consolidate daily 1-second log files into state-change logs
    ```bash
    python scripts/process_co2_log.py
    python scripts/process_shower_log.py
    ```
 
-4. **Event Management**: Run the event manager to match, name, and register events
+3. **Event Management**: Run the event manager to match, name, and register events
    ```bash
    python scripts/event_registry.py [--force] [--no-co2] [--output-dir DIR]
    ```
@@ -240,9 +265,9 @@ Each step's output is logged to `output/logs/<script_name>.log`. Or run steps in
    This must be run **before** the analysis scripts so that events have consistent names
    (see [Event Naming Convention](#event-naming-convention) below). Produces `event_log.csv`.
 
-5. **CO2 Analysis**: Determine air change rates (λ) from CO2 decay
+4. **CO2 Analysis**: Determine air change rates (λ) from CO2 decay
    ```bash
-   python scripts/co2_decay_analysis.py [--alpha FLOAT] [--beta FLOAT] [--output-dir DIR] [--no-plot] [--no-sig-figs]
+   python scripts/co2_decay_analysis.py [--alpha FLOAT] [--beta FLOAT] [--output-dir DIR] [--no-plot] [--no-sig-figs] [--entry-stop]
    ```
    | Flag | Description |
    |------|-------------|
@@ -251,9 +276,13 @@ Each step's output is logged to `output/logs/<script_name>.log`. Or run steps in
    | `--output-dir DIR` | Output directory (default: `data_root/output`) |
    | `--no-plot` | Disable plot generation |
    | `--no-sig-figs` | Disable significant figure rounding (default: 3 sig figs for files, 2 for figures) |
-   | `--entry-stop` | Truncate decay window when C_bedroom ≤ 100 + (C_entry + C_outside) / 2 — stops the fit once the remaining bedroom decay signal is within 100 ppm of the entry/outside background mean |
+   | `--entry-stop` | Truncate the decay window at the first point where C_bedroom ≤ C_entry + 50 ppm (falls back to C_outside if entry data is missing) — stops the fit once the remaining decay signal above background is too small to be reliable |
 
-6. **Environmental Analysis**: Characterize RH, temperature, and wind conditions
+   `run_analysis_workflow.py` always runs this step with `--entry-stop`. Fits with
+   R² below `MIN_R_SQUARED` (0.75) are rejected (λ set to NaN); this also drives
+   the "Lambda R² less than 0.75" PM-exclusion check in `event_registry.py`.
+
+5. **Environmental Analysis**: Characterize RH, temperature, and wind conditions
    ```bash
    python scripts/rh_temp_other_analysis.py [--output-dir DIR] [--no-plots] [--max-plot-events N] [--events LIST] [--no-sig-figs]
    ```
@@ -265,7 +294,7 @@ Each step's output is logged to `output/logs/<script_name>.log`. Or run steps in
    | `--events LIST` | Comma-separated event numbers to plot, e.g. `1,3,5` (overrides `--max-plot-events`) |
    | `--no-sig-figs` | Disable significant figure rounding (default: 3 sig figs for files, 2 for figures) |
 
-7. **Particle Analysis**: Calculate penetration, deposition, and emission rates (requires step 5 results)
+6. **Particle Analysis**: Calculate penetration, deposition, and emission rates (requires step 4 results)
    ```bash
    python scripts/particle_decay_analysis.py [--output-dir DIR] [--no-plot] [--no-sig-figs]
    ```
@@ -275,7 +304,11 @@ Each step's output is logged to `output/logs/<script_name>.log`. Or run steps in
    | `--no-plot` | Disable plot generation |
    | `--no-sig-figs` | Disable significant figure rounding (default: 3 sig figs for files, 2 for figures) |
 
-8. **Export Event Time Series** *(optional utility)*: Export predicted Ct for all size bins for a single event to CSV:
+   Every λ-dependent result (β, E, Ct, R²) is computed twice per bin — once bounded
+   by λ_outside, once by λ_entry — rather than blended into one value. See
+   [Particle Decay & Emission Analysis](#particle-decay--emission-analysis) below.
+
+7. **Export Event Time Series** *(optional utility)*: Export predicted Ct for all size bins for a single event to CSV:
    ```bash
    python scripts/export_event_timeseries.py --event N [--output PATH] [--output-dir DIR] [--no-sig-figs]
    ```
@@ -286,7 +319,7 @@ Each step's output is logged to `output/logs/<script_name>.log`. Or run steps in
    | `--output-dir DIR` | Analysis output directory (default: `data_root/output`) |
    | `--no-sig-figs` | Disable significant figure rounding |
 
-9. **Export Config Time Series** *(optional utility)*: Export 1-minute averaged environmental and particle time series per unique test configuration to Excel:
+8. **Export Config Time Series** *(optional utility)*: Export 1-minute averaged environmental and particle time series per unique test configuration to Excel:
    ```bash
    python scripts/export_config_timeseries.py [--no-sig-figs]
    ```
@@ -295,6 +328,18 @@ Each step's output is logged to `output/logs/<script_name>.log`. Or run steps in
    | `--no-sig-figs` | Disable significant figure rounding |
 
    Produces `output/event_config_timeseries.xlsx` with one sheet per configuration group. Each sheet contains the mean, standard deviation, maximum, and minimum (across replicate events) of bathroom RH/Temp, bath/bed hallway RH/Temp, bedroom RH/Temp, and all 12 OPC-N3 particle bins (0.35–10.0 µm) at 1-minute resolution from shower-on through the 2-hour deposition window. Flow rates in the 4.1–5.6 LPM range (standard and tagged variants) are grouped together; 1.4 LPM and 2.2 LPM events remain separate. A hyperlinked index sheet lists every configuration group with event counts and event numbers.
+
+9. **CO2 Lambda Source Comparison Figure** *(optional utility)*: Build a per-event λ_outside vs. λ_entry comparison figure with a paired t-test (requires step 4 results):
+   ```bash
+   python scripts/co2_lambda_source_figure.py
+   ```
+   Reads `co2_lambda_summary.csv`; does not recompute λ. Produces `output/plots/co2/co2_lambda_entry_outside.html`.
+
+10. **HOBO Onset/Decay Figures** *(optional utility)*: Build interactive HOBO temp/RH figures restricted to the onset (shower-on to +60 min) and decay (shower-off +60 to +120 min) windows around each event, plus a per-event pre/post summary:
+    ```bash
+    python scripts/hobo_onset_decay_figures.py
+    ```
+    Produces `output/plots/hobo/hobo_{temp,rh}_onset_decay.html` and `output/plots/hobo/hobo_{temp,rh}_pre_post.html`.
 
 Each analysis module produces CSV/Excel summaries and optional visualizations in the `output/` directory.
 
@@ -307,7 +352,7 @@ Events are named using a structured format generated by `scripts/event_registry.
 | Component | Description | Values |
 |-----------|-------------|--------|
 | `MMDD` | Month and day of the event | e.g., `0115` for January 15 |
-| `W##` | Water temperature code (°C) | `W11`, `W14`, `W22`, `W23`, `W25`, `W30`, `W37`, `W38`, `W40`, `W43`, `W48`, `W49`, `W52`, `W53` |
+| `W##` | Water temperature code (°C) | `W11`, `W14`, `W22`, `W23`, `W24`, `W25`, `W30`, `W37`, `W38`, `W40`, `W43`, `W48`, `W49`, `W52`, `W53` |
 | `ShowerHead` | Shower head type; omitted for Standard head | `Pepco`, `FilterWand`, `Used` |
 | `SprayPattern` | Spray pattern; varies by head type | `Wide`, `Narrow`, `Mid`, `rainfall`, `12Nozzle`, `SingleWide1`, `SingleWide2` |
 | `Mannequin` | Appended only when a mannequin was present | `Mannequin` |
@@ -356,15 +401,36 @@ Events are named using a structured format generated by `scripts/event_registry.
 **Test Parameter Timeline (FilterWand shower head, installed 2026-04-10):**
 - W38 (38 °C), FilterWand (no spray pattern variable): Starting 2026-04-10 08:55
 
-**Test Parameter Timeline (Used shower heads, starting 2026-04-13):**
+**Test Parameter Timeline (Used shower heads, first phase, starting 2026-04-13):**
 - W38 (38 °C), Used-rainfall: Starting 2026-04-13 11:35
 - W38 (38 °C), Used-12Nozzle: Starting 2026-04-15 08:25
-- W38 (38 °C), Used-SingleWide1: Starting 2026-04-17 08:35
-- W38 (38 °C), Used-SingleWide2: Starting 2026-04-20 08:35
+- W38 (38 °C), Used-SingleWide: Starting 2026-04-17 08:35
+- W38 (38 °C), Used-SingleNarrow: Starting 2026-04-20 08:35
 
 **Test Parameter Timeline (Pepco shower head, second phase, reinstalled 2026-04-23):**
 - W38 (38 °C), Narrow spray + Mannequin: Starting 2026-04-23 14:15
 - W38 (38 °C), Narrow spray (no mannequin): Starting 2026-04-29 08:35
+
+**Test Parameter Timeline (FilterWand shower head, second phase, reinstalled 2026-05-22):**
+- W38 (38 °C), FilterWand (no spray pattern variable): Starting 2026-05-22 09:30
+
+**Test Parameter Timeline (Used shower heads, second phase, reinstalled 2026-05-26):**
+- W38 (38 °C), Used-rainfall: Starting 2026-05-26 10:30
+- W38 (38 °C), Used-12Nozzle: Starting 2026-06-01 08:00
+- W38 (38 °C), Used-SingleNarrow: Starting 2026-06-03 08:30
+- W38 (38 °C), Used-SingleWide: Starting 2026-06-08 13:15
+- W38 (38 °C), Used-rainfall: Starting 2026-06-11 10:30
+- W38 (38 °C), Used-SingleNarrow + Mannequin: Starting 2026-06-22 11:45 (mannequin present through 2026-07-02 09:45)
+- W38 (38 °C), Used-SingleNarrow: Starting 2026-06-26 07:45
+
+**Water temperature changes under the Used head (no shower head/spray change):**
+- W49 (49 °C): Starting 2026-07-14 10:15
+- W24 (24 °C): Starting 2026-07-15 10:15
+
+Measured shower head flow rate is tracked continuously across the whole campaign
+(not just at head/pattern changes) and stored per event in `config_key` as an
+optional `_FlowRateX.XLPM` suffix; see `FLOW_RATE_TRANSITIONS` in
+`src/event_manager.py` for the full record.
 
 **Bath fan testing:**
 - Fan off: From experiment start through 2026-03-30
@@ -407,6 +473,11 @@ python scripts/co2_decay_analysis.py --no-plot --output-dir /path/to/output
 - Three source concentration methods for uncertainty: λ_average (mean of outside + entry), λ_outside, λ_entry
 - Calculates λ via linear regression of the log-transformed decay:
   y = −ln[(C(t) − C_avg) / (C₀ − C_avg)], λ = slope of y vs. time
+- Fits with R² below `MIN_R_SQUARED` (0.75) are rejected (λ set to NaN); this also
+  drives the "Lambda R² less than 0.75" PM-analysis exclusion check in `event_registry.py`
+- Optional `--entry-stop` truncates the decay window at the first point where
+  C_bedroom ≤ C_entry + 50 ppm (falls back to C_outside if entry data is missing);
+  `run_analysis_workflow.py` always runs with this flag
 
 **Output Files:**
 - `output/co2_lambda_summary.csv` - Per-event lambda results
@@ -439,11 +510,17 @@ V·dC/dt = p·Q·C_out - Q·C - β·C·V + E
 dC/dt = p·λ·C_out - λ·C - β·C + E/V
 ```
 
+Two independent air-change rates come out of the CO2 decay analysis: λ_outside and
+λ_entry. Rather than blending them into one λ, steps 2–6 below run **twice per
+bin**, once bounded by each source, so every λ-dependent result (β, E, Ct, R²) is
+reported as an outside/entry pair rather than a single value. Only the penetration
+factor (step 1) is λ-independent.
+
 1. **Penetration factor (p):** Ratio of indoor to outdoor concentration averaged over before/after windows relative to the shower event; zeros excluded; capped at 1.
    - *QA:* Minimum 10 valid points per window (`MIN_POINTS_PENETRATION`); windows where this is not met are skipped.
    - Night event windows: before = 9 pm (day before) → 2 am; after = 9 am → 2 pm
    - Day event windows: before = 9 am → 2 pm; after = 9 pm → 2 am (next day)
-2. **Air change rate (λ):** Loaded from CO2 decay analysis results (h⁻¹).
+2. **Air change rate (λ):** λ_outside and λ_entry loaded from CO2 decay analysis results (h⁻¹); steps 3–6 repeat once per source.
 3. **Other process rate (β, numerical):** Step-by-step solution during the 2-hour (`DEPOSITION_WINDOW_HOURS`) post-shower decay window; beta solved at each time step from the discrete mass balance:
    ```
    β = 1/dt - λ - C_{t+1}/(C_t·dt) + p·λ·(C_out,t / C_t)
@@ -457,42 +534,48 @@ dC/dt = p·λ·C_out - λ·C - β·C + E/V
 6. **Total emission (E_total):** Trapezoidal rule area under the E_t vs. time curve from shower ON to peak; negative per-step contributions clipped to 0.
 
 **Output Files:**
+
+Sheets/columns marked "doubled" carry two variants, `bin{n}_outside_...` and
+`bin{n}_entry_...`, one per λ source; the Excel workbook retains every event
+regardless of flow rate, but the boxplot/comparison figures below only include
+events with a measured flow rate in `FLOW_RATE_MIN`–`FLOW_RATE_MAX` (4.1–5.6 LPM).
+
 - `output/particle_analysis_summary.xlsx` - Multi-sheet Excel workbook:
   - `all_results` — Full results table (all metrics per event and bin)
-  - `p_penetration` — Penetration factors per event and bin (includes test_name)
-  - `beta_other` — Other process rates per event and bin (includes test_name)
-  - `beta_r_squared` — R² of forward Euler decay fit per event and bin (includes test_name)
-  - `E_emission` — Emission rates per event and bin (includes test_name)
-  - `E_total_particles` — Total emitted particle counts (E_total) per bin (includes test_name)
-  - `E_r_squared` — R² of forward Euler emission-phase simulation per bin (includes test_name)
-  - `peak_comparison` — Measured vs. predicted concentration at peak_time and deposition_end (wide format, one row per event)
+  - `p_penetration` — Penetration factors per event and bin (includes test_name); λ-independent
+  - `beta_deposition` — Other process rates per event and bin (includes test_name); doubled
+  - `beta_r_squared` — R² of forward Euler decay fit per event and bin (includes test_name); doubled
+  - `E_emission` — Emission rates per event and bin (includes test_name); doubled
+  - `E_total_particles` — Total emitted particle counts (E_total) per bin (includes test_name); doubled
+  - `E_r_squared` — R² of forward Euler emission-phase simulation per bin (includes test_name); doubled
+  - `peak_comparison` — Measured vs. predicted concentration at peak_time and deposition_end (wide format, one row per event); predicted columns doubled
 - `output/plots/event_figures/pm_decay/event_NN-testname_pm_decay.png` - Individual event decay curves (four-panel)
-  - *Top panel:* Measured concentration (solid) and continuous predicted Ct (dashed); shower ON/OFF dotted markers; optional outdoor PM overlay for events in `OUTDOOR_PM_EVENTS`
+  - *Top panel:* Measured concentration (solid) and continuous predicted Ct (dashed); shower ON/OFF dotted markers; optional outdoor PM overlay for events in `OUTDOOR_PM_EVENTS` (currently events 75–85)
   - *Emission panels (×3):* Bins 0–2, 3–6, and 7–11; per-step E_t as faint lines; E_mean as dashed horizontal line; emission R² annotation; x-axes match concentration panel
 - `output/plots/event_figures/excluded_events/` - Figures for duration-excluded (water-temperature-testing) events
 
-- `output/plots/penetration_summary.png` - Bar chart summary of penetration factors by size
-- `output/plots/deposition_summary.png` - Bar chart summary of other process rates by size
-- `output/plots/emission_summary.png` - Bar chart summary of emission rates by size
-- `output/plots/emission_etotal_boxplot_{bin0-2,bin3-6,bin7-11}.png` - E_total by water temperature (fixed temp axis, one figure per bin group)
+- `output/plots/penetration_summary.png` - Bar chart summary of penetration factors by size (λ-independent, one file)
+- `output/plots/deposition_summary_{outside,entry}.png` - Bar chart summary of other process rates by size, one file per λ source
+- `output/plots/emission_summary_{outside,entry}.png` - Bar chart summary of emission rates by size, one file per λ source
+- `output/plots/emission_etotal_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png` - E_total by water temperature (fixed temp axis, doubled per source: 6 files)
 - `output/plots/emission_etotal_boxplot.md` - Event membership for the E_total boxplot (lists event numbers and config keys per box)
-- `output/plots/other_process_rate_boxplot_{bin0-2,bin3-6,bin7-11}.png` - β by water temperature (fixed temp axis)
+- `output/plots/other_process_rate_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png` - β by water temperature (fixed temp axis, doubled per source: 6 files)
 - `output/plots/other_process_rate_boxplot.md` - Event membership for the β boxplot
-- `output/plots/emission_rate_boxplot_{bin0-2,bin3-6,bin7-11}.png` - E_mean by water temperature (fixed temp axis)
+- `output/plots/emission_rate_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png` - E_mean by water temperature (fixed temp axis, doubled per source: 6 files)
 - `output/plots/emission_rate_boxplot.md` - Event membership for the E_mean boxplot
-- `output/plots/penetration_factor_boxplot_{bin0-2,bin3-6,bin7-11}.png` - p by water temperature (fixed temp axis)
+- `output/plots/penetration_factor_boxplot_{bin0-2,bin3-6,bin7-11}.png` - p by water temperature (fixed temp axis; λ-independent, 3 files)
 - `output/plots/penetration_factor_boxplot.md` - Event membership for the penetration factor boxplot
-- `output/plots/emission_etotal_by_bedroom_rh_boxplot_{bin0-2,bin3-6,bin7-11}.png` - E_total vs. bedroom RH (metric axis)
+- `output/plots/emission_etotal_by_bedroom_rh_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png` - E_total vs. bedroom RH (metric axis, doubled per source)
 - `output/plots/emission_etotal_by_bedroom_rh_boxplot.md` - Event membership for the bedroom RH boxplot
-- `output/plots/emission_etotal_by_bedroom_temp_boxplot_{bin0-2,bin3-6,bin7-11}.png` - E_total vs. bedroom temperature (metric axis)
+- `output/plots/emission_etotal_by_bedroom_temp_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png` - E_total vs. bedroom temperature (metric axis, doubled per source)
 - `output/plots/emission_etotal_by_bedroom_temp_boxplot.md` - Event membership for the bedroom temp boxplot
-- `output/plots/emission_etotal_by_acr_boxplot_{bin0-2,bin3-6,bin7-11}.png` - E_total vs. air change rate (metric axis)
+- `output/plots/emission_etotal_by_acr_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png` - E_total vs. air change rate (metric axis, doubled per source)
 - `output/plots/emission_etotal_by_acr_boxplot.md` - Event membership for the ACR boxplot
-- `output/plots/emission_etotal_by_beta_boxplot_{bin0-2,bin3-6,bin7-11}.png` - E_total vs. other process rate (metric axis)
+- `output/plots/emission_etotal_by_beta_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png` - E_total vs. other process rate (metric axis, doubled per source)
 - `output/plots/emission_etotal_by_beta_boxplot.md` - Event membership for the β boxplot
-- `output/plots/emission_etotal_by_p_boxplot_{bin0-2,bin3-6,bin7-11}.png` - E_total vs. penetration factor (metric axis)
+- `output/plots/emission_etotal_by_p_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png` - E_total vs. penetration factor (metric axis, doubled per source)
 - `output/plots/emission_etotal_by_p_boxplot.md` - Event membership for the p boxplot
-- `output/plots/emission_etotal_by_showerhead_boxplot_{bin0-2,bin3-6,bin7-11}.png` - E_total by shower head type
+- `output/plots/emission_etotal_by_showerhead_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png` - E_total by shower head type (doubled per source)
 - `output/plots/emission_etotal_by_showerhead_boxplot.md` - Event membership for the shower head boxplot
 - `output/plots/comparison/spray_pattern_{metric}_{bin0-2,bin3-6,bin7-11}.png` - Comparison boxplots by spray pattern (5 metric families × 3 bin groups each)
 - `output/plots/comparison/head_type_{metric}_{bin0-2,bin3-6,bin7-11}.png` - Comparison boxplots by shower head type
@@ -544,6 +627,51 @@ python scripts/rh_temp_other_analysis.py --max-plot-events 10
 - `output/plots/temperature_pre_post_boxplot.png` - Pre/post temperature comparison
 - `output/plots/wind_speed_pre_post_boxplot.png` - Pre/post wind speed comparison
 - `output/plots/wind_direction_pre_post_boxplot.png` - Pre/post wind direction comparison
+
+## MODULAIR-PM Fleet Comparison (IAQ&V)
+
+A separate line of analysis compares the study's two QuantAQ MODULAIR-PM sensors
+(inside MOD-PM-00195, outside MOD-PM-00785) against the broader NIST Indoor Air
+Quality and Ventilation Group fleet of co-located MODULAIR-PM units deployed in
+the same test facility. It characterizes sensor agreement, builds candidate
+inter-sensor correction factors for the historical 195 record, and evaluates a
+position-weighted fleet average (C_room) as an alternative bedroom concentration
+reference.
+
+Fleet data are produced by the separate `NIST_moduair-pm` repository and read
+from the `moduair_pm_chunks` share configured in `data_config.json` — this is
+independent of the QuantAQ API data downloaded by `download_quantaq_data.py`.
+`src/moduair_loader.py` loads and aligns fleet sensor chunks onto a shared
+1-minute time base; it does not download anything itself. All five scripts below
+share a `2026-06-0{3,4}` through `2026-07-16` default window, the period the
+fleet was co-located with the study sensors, and take `--start`/`--end`/
+`--output-dir` overrides.
+
+```bash
+# Inter-sensor correction factor ratios + 195/813 Deming fit
+python scripts/moduair_correction_factor.py
+
+# Per-event, per-sensor delta peak time (shower ON to peak)
+python scripts/moduair_event_peak_times.py
+
+# Per-bin time series across the co-located bedroom fleet
+python scripts/moduair_bin2_timeseries.py
+
+# Inside sensor (195) vs. position-weighted fleet average (C_room)
+python scripts/moduair_cave_ratio.py
+
+# Per-sensor variant of export_config_timeseries.py across the fleet
+python scripts/export_config_timeseries_fleet.py [--no-sig-figs] [--sensors 195 401 ...]
+python scripts/export_config_timeseries_fleet.py --c-room
+```
+
+| Script | Purpose | Key Output |
+|--------|---------|------------|
+| `moduair_correction_factor.py` | Bin-wise concentration ratios (195/813, 195/quad-average, 195/others) plus a Deming (orthogonal-distance) regression fit of 813 vs. 195 for a candidate correction | `moduair_correction_factor_195_813_*.csv`, `moduair_correction_195_813_fit_*.csv`, per-bin HTML figures |
+| `moduair_event_peak_times.py` | Delta peak time (shower ON to peak) per sensor per event | `moduair_event_peak_times.csv`, `event_delta_peak_times.html` |
+| `moduair_bin2_timeseries.py` | One interactive figure per bin (0–10) of the co-located bedroom fleet, styled after the NIST_moduair-pm weekly figures | `plots/moduair_correction/bin{N}_timeseries.html` |
+| `moduair_cave_ratio.py` | C_bed1 (sensor 195) vs. C_room (position-weighted fleet average) scatter and time-ratio figures, restricted to samples where >8 fleet sensors report | `plots/moduair_room/c_bed1_vs_c_room_bin{N}*.html`, `moduair_room_ratio_fit*.csv` |
+| `export_config_timeseries_fleet.py` | Per-sensor and C_room aggregated + raw event-configuration workbooks, same structure as `export_config_timeseries.py` | `output/event_config_timeseries_fleet/MOD-PM-<sn>/...`, `.../C_room/...` |
 
 ## Dependencies
 

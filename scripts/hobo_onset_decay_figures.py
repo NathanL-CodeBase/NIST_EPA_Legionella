@@ -32,6 +32,8 @@ from the loader room config for MB_E:
 Output Files:
     output/plots/hobo/hobo_temp_onset_decay.html
     output/plots/hobo/hobo_rh_onset_decay.html
+    output/plots/hobo/hobo_temp_pre_post.html   (per-event pre/post summary, see 2026-09-10 log)
+    output/plots/hobo/hobo_rh_pre_post.html     (per-event pre/post summary, see 2026-09-10 log)
 
 Author: Nathan Lima
 Institution: National Institute of Standards and Technology (NIST)

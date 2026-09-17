@@ -117,9 +117,12 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parent
     log_dir = _get_log_dir()
 
-    # Define the pipeline steps as (command list, optional working directory)
+    # Define the pipeline steps as (command list, optional working directory).
+    # download_quantaq_data.py is not run here: the experimental campaign
+    # ended 2026-07-16 and no further QuantAQ data will ever be collected, so
+    # every pipeline run was re-hitting the API for zero new records. Run it
+    # manually (one-off) if the local QuantAQ cache ever needs to be rebuilt.
     steps = [
-        (["python", "scripts/download_quantaq_data.py"], repo_root),
         (["python", "scripts/process_quantaq_data.py"], repo_root),
         (["python", "scripts/process_co2_log.py"], repo_root),
         (["python", "scripts/process_shower_log.py"], repo_root),

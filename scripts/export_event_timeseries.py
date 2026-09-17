@@ -11,8 +11,8 @@ size bins to a time-indexed CSV file.
 Intended use: provide time-series data to collaborators who want the
 model predictions without regenerating all figures.
 
-Output CSV columns:
-    Timestamp | bin0_Ct (#/m³) | bin1_Ct | … | bin11_Ct
+Output CSV columns (doubled per lambda source, outside and entry):
+    Timestamp | bin0_outside_Ct (#/m³) | bin0_entry_Ct (#/m³) | … | bin11_entry_Ct (#/m³)
 
 Usage
 -----

@@ -54,7 +54,7 @@ Supported Instruments:
     - Aranet4: CO2, RH, Temperature (Entry, Bedroom, Bathroom, Outside)
     - QuantAQ MODULAIR-PM: particle counts only (met_rh/met_temp excluded — flow cell measurements)
     - Vaisala HMP155/HMP45A: RH, Temperature (via DAQ)
-    - HOBO UX100: RH, Temperature (Bathroom, Doorway, Bedroom)
+    - HOBO UX100: RH, Temperature (Bathroom1, Bathroom2, Bath/Bed, Bedroom1-3)
     - AIO2: Wind speed, wind direction, outdoor RH and temperature
 
 Author: Nathan Lima

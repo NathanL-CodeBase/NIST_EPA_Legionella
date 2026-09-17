@@ -54,9 +54,11 @@ Output Files (chunks/ subdirectory):
     - quantaq-inside-final-{YYYYMMDD}-{YYYYMMDD}.csv: Weekly calibrated inside chunks
 
 Applications:
-    - Routine data collection during multi-week EPA Legionella test experiments
+    - The experimental campaign concluded on PROJECT_END_DATE (2026-07-16); no new
+      QuantAQ data will ever be collected, so this script is no longer part of the
+      routine pipeline (see run_analysis_workflow.py) and only needs to be run
+      manually, one-off, if the local chunks/ cache is ever lost or needs rebuilding
     - Supplying raw input files for process_quantaq_data.py to combine and process
-    - Incremental refresh (run daily or weekly) without re-downloading historical data
 
 Author: Nathan Lima
 Institution: National Institute of Standards and Technology (NIST)

@@ -11,9 +11,11 @@ approach to solve the mass balance equation for seven particle size bins.
 
 Results characterize how shower-generated aerosols of different sizes penetrate,
 deposit, and are emitted under controlled experimental conditions at varying water
-temperatures and shower head configurations. CO2-derived air change rates from a
-companion analysis constrain the mass balance, enabling independent estimation of
-penetration, deposition, and emission for each size bin across all shower events.
+temperatures and shower head configurations. Two independent CO2-derived air change
+rates (lambda_outside and lambda_entry) constrain the mass balance, so every
+lambda-dependent metric (beta, E, Ct, R²) is computed twice per bin — once bounded
+by each source — rather than blended into a single value. This brackets the result
+between the two plausible ventilation-rate estimates instead of committing to one.
 
 Particle size bins analyzed (um):
     - Bin 0:  0.35-0.46
@@ -30,10 +32,12 @@ Particle size bins analyzed (um):
     - Bin 11: 8.0-10.0
 
 Key Metrics Calculated:
-    - p: Particle penetration factor (dimensionless, 0-1 range)
-    - beta_other: Effective other process loss rate (h-1)
-    - E: Shower emission rate (particles/minute)
-    - lambda: Air change rate from CO2 analysis (h-1)
+    - p: Particle penetration factor (dimensionless, 0-1 range); lambda-independent
+    - beta_other: Effective other process loss rate (h-1); one value per bin per
+      lambda source (outside, entry)
+    - E: Shower emission rate (particles/minute); one value per bin per lambda source
+    - lambda_outside, lambda_entry: Air change rates from the CO2 decay analysis
+      (co2_decay_analysis.py), used independently to bound beta/E/Ct/R² (h-1)
 
 Analysis Features:
     - Numerical solution of time-dependent mass balance equation
@@ -62,7 +66,9 @@ Methodology:
        - Allowable range: 0-1 (values > 1 are capped at 1)
 
     2. Obtain air change rate (lambda):
-       - Load from CO2 decay analysis results
+       - Load lambda_outside and lambda_entry from CO2 decay analysis results
+       - Steps 3-6 below run once per source (outside, entry); every
+         lambda-dependent result is stored per source rather than averaged
        - Units: h-1
 
     3. Calculate other process rate (beta_other) when E=0:
@@ -112,15 +118,20 @@ Methodology:
 Output Files:
     - particle_analysis_summary.xlsx: Multi-sheet workbook with:
         * all_results: Full results table (all metrics per event and bin)
-        * p_penetration: Penetration factors per event and bin (includes test_name)
-        * beta_other: Other process rates per event and bin (includes test_name)
-        * beta_r_squared: R² of forward Euler decay simulation (includes test_name)
-        * E_emission: Emission rates per event and bin (includes test_name)
-        * E_total_particles: Total emitted particle counts (E_total) per bin (includes test_name)
-        * E_r_squared: R² of forward Euler emission-phase simulation (includes test_name)
+        * p_penetration: Penetration factors per event and bin (includes test_name);
+          lambda-independent, one column per bin
+        * beta_deposition: Other process rates per event and bin (includes test_name);
+          lambda-dependent, columns doubled as bin{n}_outside_beta_other / bin{n}_entry_beta_other
+        * beta_r_squared: R² of forward Euler decay simulation (includes test_name);
+          doubled per source like beta_deposition
+        * E_emission: Emission rates per event and bin (includes test_name); doubled per source
+        * E_total_particles: Total emitted particle counts (E_total) per bin (includes
+          test_name); doubled per source
+        * E_r_squared: R² of forward Euler emission-phase simulation (includes test_name);
+          doubled per source
         * peak_comparison: Measured vs. predicted concentration at peak_time and
           deposition_end for each bin, with percent difference (wide format,
-          one row per event)
+          one row per event); predicted columns doubled per source
     - plots/event_figures/pm_decay/event_NN-YYYYYY_pm_decay.png: Individual event decay
       curves (four-panel): top panel shows measured concentrations and continuous
       predicted Ct (emission + decay phases) with decay R² in text box; three emission
@@ -131,18 +142,35 @@ Output Files:
     - plots/event_figures/excluded_events/: Figures for excluded events (duration-excluded
       showers saved here for reference rather than in type-specific subdirs)
     - plots/penetration_summary.png: Summary bar chart of penetration factors by size
-    - plots/deposition_summary.png: Summary bar chart of other process rates by size
-    - plots/emission_summary.png: Summary bar chart of emission rates by size
-    - plots/emission_etotal_boxplot_{bin0-2,bin3-6,bin7-11}.png: E_total by water temp (fixed axis)
-    - plots/other_process_rate_boxplot_{bin0-2,bin3-6,bin7-11}.png: β by water temp (fixed axis)
-    - plots/emission_rate_boxplot_{bin0-2,bin3-6,bin7-11}.png: E_mean by water temp (fixed axis)
-    - plots/penetration_factor_boxplot_{bin0-2,bin3-6,bin7-11}.png: p by water temp (fixed axis)
-    - plots/emission_etotal_by_bedroom_rh_boxplot_{bin0-2,bin3-6,bin7-11}.png: vs. bedroom RH
-    - plots/emission_etotal_by_bedroom_temp_boxplot_{bin0-2,bin3-6,bin7-11}.png: vs. bedroom temp
-    - plots/emission_etotal_by_acr_boxplot_{bin0-2,bin3-6,bin7-11}.png: vs. air change rate
-    - plots/emission_etotal_by_beta_boxplot_{bin0-2,bin3-6,bin7-11}.png: vs. other process rate
-    - plots/emission_etotal_by_p_boxplot_{bin0-2,bin3-6,bin7-11}.png: vs. penetration factor
-    - plots/emission_etotal_by_showerhead_boxplot_{bin0-2,bin3-6,bin7-11}.png: by shower head
+      (lambda-independent, one file)
+    - plots/deposition_summary_{outside,entry}.png: Summary bar chart of other process
+      rates by size, one file per lambda source
+    - plots/emission_summary_{outside,entry}.png: Summary bar chart of emission rates by
+      size, one file per lambda source
+    - plots/emission_etotal_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png: E_total by
+      water temp (fixed axis), doubled per source (6 files)
+    - plots/other_process_rate_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png: β by
+      water temp (fixed axis), doubled per source (6 files)
+    - plots/emission_rate_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png: E_mean by
+      water temp (fixed axis), doubled per source (6 files)
+    - plots/penetration_factor_boxplot_{bin0-2,bin3-6,bin7-11}.png: p by water temp
+      (fixed axis); lambda-independent, 3 files
+    - plots/emission_etotal_by_bedroom_rh_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png:
+      vs. bedroom RH, doubled per source
+    - plots/emission_etotal_by_bedroom_temp_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png:
+      vs. bedroom temp, doubled per source
+    - plots/emission_etotal_by_acr_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png: vs.
+      air change rate, doubled per source
+    - plots/emission_etotal_by_beta_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png: vs.
+      other process rate, doubled per source
+    - plots/emission_etotal_by_p_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png: vs.
+      penetration factor, doubled per source
+    - plots/emission_etotal_by_showerhead_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png:
+      by shower head, doubled per source
+
+    Note: FLOW_RATE_MIN/FLOW_RATE_MAX (4.1-5.6 LPM) restrict every boxplot and
+    comparison figure to events with a measured flow rate in that range; the Excel
+    workbook retains all events regardless of flow rate.
 
 Applications:
     - Characterizing size-resolved particle penetration and deposition in residential
@@ -548,7 +576,7 @@ def run_particle_analysis(
     print(f"Time step: {TIME_STEP_MINUTES} minute(s)")
     print("Penetration factor: averaged before/after windows (p capped at 1)")
     print(f"Deposition window: {DEPOSITION_WINDOW_HOURS} hour(s) after shower")
-    print("Beta selection: R²-based 3-step (unclamped → clamped ≥ 0 → 0; threshold 0.80)")
+    print("Beta selection: R²-based 4-step (unclamped → clamped ≥ 0 → 0 → invalid; threshold 0.80)")
     print("\nValidation thresholds:")
     print(f"  Max other process rate (beta_other): {MAX_OTHER_PROCESS_RATE} h^-1")
     print(

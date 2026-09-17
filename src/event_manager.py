@@ -46,8 +46,10 @@ Processing Features:
     - Replicate numbering: per-condition counters (keyed by date, water temp,
       shower head, spray pattern, mannequin, door position, fan) produce
       sequential R01, R02, … suffixes
-    - Bidirectional synthetic event creation: uses registry module (lazy
-      import) for duration inference from neighboring events when available
+    - Synthetic CO2 event creation for showers missing CO2 data: uses registry
+      module (lazy import) for duration inference from neighboring events when
+      available. CO2 events missing a shower are detected (detect_missing_events)
+      but no synthetic shower event is created for them here.
     - Bath fan detection: checks shower_log for fan state from shower start
       through 2 hours after shower end; pre-shower fan use is not counted
 
@@ -88,8 +90,9 @@ Naming Convention Format:
     - RNN: Replicate number (R01, R02, etc.)
 
     config_key Format:
-    W##[_ShowerHead[_SprayPattern]][_Mannequin]_DoorXxx_FanXxx
+    W##[_ShowerHead[_SprayPattern]][_Mannequin]_BathDoorXxx_BdrmDoorXxx_FanXxx[_FlowRateX.XLPM]
     Used for grouping events across days with identical test conditions.
+    See get_test_configuration() for the exact construction.
 
     Examples:
     - 0115_W48_Open_R01              (standard head, 48 °C, open door)
@@ -1222,7 +1225,8 @@ def process_events_with_management(
     Process all events with filtering, matching, naming, and logging.
 
     This is the main entry point for the enhanced event management system.
-    Supports bidirectional synthetic event creation (shower<->CO2).
+    Creates synthetic CO2 events for showers missing CO2 data; CO2 events
+    missing a shower are detected but not synthesized here.
 
     Parameters:
         shower_events: List of shower event dictionaries

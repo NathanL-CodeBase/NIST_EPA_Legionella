@@ -66,7 +66,10 @@ Methodology:
     5. Perform linear regression of y vs t to obtain λ (slope, forced through origin)
     6. Repeat steps 4–5 using three source concentration methods (average, outside,
        entry) for uncertainty assessment
-    7. Generate per-event decay plots, a summary bar chart, and a λ-by-water-
+    7. Reject fits with R² < MIN_R_SQUARED (0.75); λ for that source is set to NaN.
+       This gate also drives the "Lambda R² less than 0.75" PM-analysis exclusion
+       check in event_registry.py.
+    8. Generate per-event decay plots, a summary bar chart, and a λ-by-water-
        temperature box-and-whisker plot
 
 Output Files:

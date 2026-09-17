@@ -216,7 +216,7 @@ def _calculate_p_for_window(
         particle_data (pd.DataFrame): DataFrame with particle concentrations
         window_start (datetime): Start of analysis window
         window_end (datetime): End of analysis window
-        bin_num (int): Particle bin number (0-6)
+        bin_num (int): Particle bin number (0-11)
 
     Returns:
         Dict with p_mean, p_std, n_points, and optional skip_reason
@@ -300,7 +300,7 @@ def calculate_penetration_factor(
         particle_data (pd.DataFrame): DataFrame with particle concentrations
         shower_on (datetime): Shower start time
         time_of_day (str): "Day" or "Night" time classification
-        bin_num (int): Particle bin number (0-6)
+        bin_num (int): Particle bin number (0-11)
 
     Returns:
         Dict: Dictionary with p_mean, p_std, n_points, n_windows; or
@@ -704,10 +704,10 @@ def calculate_emission_rate(
         particle_data (pd.DataFrame): DataFrame with particle concentrations
         shower_on (datetime): Shower start time
         peak_time (datetime): Time of peak inside concentration
-        bin_num (int): Particle bin number (0-6)
+        bin_num (int): Particle bin number (0-11)
         p (float): Penetration factor
         lambda_ach (float): Air change rate (h⁻¹)
-        beta_other (float): Other process rate (h⁻¹)
+        beta (float): Other process rate (h⁻¹)
 
     Returns:
         Dict: Dictionary with E_mean, E_std, E_total statistics (#/min, #);
@@ -855,10 +855,10 @@ def calculate_ct_prediction(
         shower_on (datetime): Shower start time (simulation start)
         shower_off (datetime): Shower end time
         deposition_end (datetime): End of deposition window (simulation end)
-        bin_num (int): Particle bin number (0-6)
+        bin_num (int): Particle bin number (0-11)
         p (float): Penetration factor
         lambda_ach (float): Air change rate (h⁻¹)
-        beta_other (float): Other process rate (h⁻¹)
+        beta (float): Other process rate (h⁻¹)
         E_mean (float): Mean emission rate during shower (#/min); use 0.0
                         to compute a decay-only prediction
         peak_time (datetime): Time of peak concentration (E=0 after this)
