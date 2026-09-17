@@ -39,9 +39,10 @@ Analysis Features:
       if registry is not available
     - Shower ON/OFF dotted markers overlaid on per-event CO2 concentration plots
     - Optional --entry-stop flag: truncates the decay window when the bedroom CO2 has
-      decayed to within 100 ppm above the mean of entry and outside concentrations
-      (C_bedroom ≤ 100 + (C_entry + C_outside) / 2), stopping the fit once the remaining
-      decay signal above background is too small to be reliable
+      decayed to within 50 ppm above the entry concentration
+      (C_bedroom ≤ C_entry + 50), falling back to outside concentration if entry data
+      is missing, stopping the fit once the remaining decay signal above background
+      is too small to be reliable
 
 Methodology:
     The mass balance equation for a well-mixed zone:
@@ -1022,10 +1023,10 @@ def _apply_entry_stop(
     Truncate the decay window when the bedroom CO2 has decayed near background.
 
     Scans the decay window and sets decay_end to the first timestep where
-    C_bedroom <= 100 + (C_entry + C_outside) / 2, i.e. when the bedroom
-    concentration is within 100 ppm above the mean of the entry and outside
-    background concentrations.  If no such point is found the event is returned
-    unchanged.
+    C_bedroom <= C_entry + 50, i.e. when the bedroom concentration is within
+    50 ppm above the entry concentration. If entry data is missing for a row,
+    the outside concentration is used as fallback. If no such point is found
+    the event is returned unchanged.
 
     Parameters:
         event: Event dict with decay_start, decay_end, and other timing info.
@@ -1047,9 +1048,9 @@ def _apply_entry_stop(
     if window.empty or not required_cols.issubset(window.columns):
         return event
 
-    # Find first row where bedroom has decayed to within 100 ppm of background
-    background = (window["C_entry"] + window["C_outside"]) / 2.0
-    crossing = window[window["C_bedroom"] <= 100.0 + background]
+    # Find first row where bedroom has decayed to within 50 ppm of entry (fallback to outside)
+    reference = window["C_entry"].fillna(window["C_outside"])
+    crossing = window[window["C_bedroom"] <= reference + 50.0]
     if crossing.empty:
         return event
 
@@ -1086,9 +1087,10 @@ def run_co2_decay_analysis(
             apply SIG_FIGS_FIGURE significant figures to figure annotations.
             Pass False (via --no-sig-figs) to preserve full floating-point precision.
         entry_stop (bool): If True, truncate each event's decay window at the
-            first point where C_bedroom ≤ 100 + (C_entry + C_outside) / 2,
-            stopping once the remaining decay signal above background is too
-            small to be reliable, instead of using the fixed 2-hour window.
+            first point where C_bedroom ≤ C_entry + 50 ppm, falling back to outside
+            concentration if entry data is missing, stopping once the remaining
+            decay signal above background is too small to be reliable, instead of
+            using the fixed 2-hour window.
 
     Returns:
         pd.DataFrame: DataFrame with analysis results for all injection events
@@ -1102,7 +1104,7 @@ def run_co2_decay_analysis(
     if entry_stop:
         print(
             f"Decay window: shower_on + {DECAY_START_AFTER_SHOWER_ON_MIN} min → "
-            f"entry-stop mode (truncated when C_bedroom ≤ 100 + (C_entry + C_outside) / 2)"
+            f"entry-stop mode (truncated when C_bedroom ≤ C_entry + 50 ppm, fallback to outside)"
         )
     else:
         print(
@@ -1593,10 +1595,10 @@ def main():
         action="store_true",
         help=(
             "Truncate each event's decay window at the first timestep where the "
-            "bedroom CO2 has decayed to within 100 ppm above the mean of entry and "
-            "outside concentrations (C_bedroom ≤ 100 + (C_entry + C_outside) / 2). "
-            "Stops the fit once the remaining decay signal above background is too "
-            "small to be reliable."
+            "bedroom CO2 has decayed to within 50 ppm above the entry concentration "
+            "(C_bedroom ≤ C_entry + 50). If entry data is missing, outside concentration "
+            "is used as fallback. Stops the fit once the remaining decay signal above "
+            "background is too small to be reliable."
         ),
     )
 
