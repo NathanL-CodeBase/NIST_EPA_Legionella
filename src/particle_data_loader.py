@@ -12,8 +12,9 @@ scripts/particle_decay_analysis.py and is not run directly.
 Key Functions:
     - load_quantaq_data: Load all processed QuantAQ CSV chunks for 'inside' or
       'outside'; concatenate, deduplicate, and return particle-bin DataFrame.
-    - load_and_merge_quantaq_data: Load both locations, merge on datetime, resample
-      to 1-min intervals, interpolate short gaps, and apply rolling average.
+    - load_and_merge_quantaq_data: Load both locations (inside room-corrected via
+      src.particle_room_correction), merge on datetime, resample to 1-min
+      intervals, interpolate short gaps, and apply rolling average.
     - load_shower_log: Load the shower valve state-change log; convert timestamps.
     - load_co2_lambda_results: Load CO₂ decay lambda results; rename unit-annotated
       column headers to clean internal names.
@@ -141,16 +142,27 @@ def load_quantaq_data(location: str) -> pd.DataFrame:
     return combined
 
 
-def load_and_merge_quantaq_data() -> pd.DataFrame:
+def load_and_merge_quantaq_data(events: List[Dict]) -> pd.DataFrame:
     """
     Load and merge QuantAQ inside and outside data into a single DataFrame.
+
+    The inside series is room-corrected before merging: see
+    src.particle_room_correction for the 2026-06-03 fleet-average substitution
+    and the pre-2026-06-03 per-event ratio correction.
+
+    Parameters:
+        events (List[Dict]): Event dicts (from get_events_from_registry or the
+            process_events_with_management fallback) used to determine each
+            pre-2026-06-03 event's correction window and water-temp bucket.
 
     Returns:
         pd.DataFrame: DataFrame with columns for inside and outside particle bins
     """
+    from src.particle_room_correction import build_corrected_inside_data
+
     print("\nLoading QuantAQ particle data...")
 
-    inside_data = load_quantaq_data("inside")
+    inside_data = build_corrected_inside_data(events)
     outside_data = load_quantaq_data("outside")
 
     # Rename columns to distinguish inside vs outside

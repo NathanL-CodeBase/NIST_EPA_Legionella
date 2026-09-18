@@ -185,11 +185,23 @@ Applications:
 Module Structure:
     - src/particle_calculations.py: Pure computation functions (p, beta, E, Ct)
     - src/particle_data_loader.py: Data loading and event identification
+    - src/particle_room_correction.py: Room-concentration correction applied to the
+      "inside" series before analysis (fleet C_room average from 2026-06-03 to
+      2026-07-16; per-event ratio correction of MOD-PM-00195 before that)
     - scripts/particle_decay_analysis.py: Orchestration and main pipeline (this file)
+    - scripts/particle_beta_emission_source_figures.py: Per-bin beta/E entry-vs-outside
+      figures with the room-correction cutover marked (run after this script)
 
 Author: Nathan Lima
 Institution: National Institute of Standards and Technology (NIST)
 Date: 2026
+Update log:
+    2026-09-18  Room-concentration correction (src/particle_room_correction.py):
+        "inside" data is now the position-weighted MODULAIR-PM fleet average
+        (C_room) from 2026-06-03 to 2026-07-16, and a per-event, water-temp-
+        bucketed ratio correction of MOD-PM-00195 before that date. Events are
+        now loaded before particle data so the correction can use each event's
+        window and water_temp.
 """
 
 import sys
@@ -589,10 +601,9 @@ def run_particle_analysis(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load particle data
-    particle_data = load_and_merge_quantaq_data()
-
-    # Try to load events from unified registry first (for consistent numbering)
+    # Load events first: the room-concentration correction applied while loading
+    # particle data (src.particle_room_correction) needs each pre-2026-06-03
+    # event's shower_on/deposition_end window and water_temp bucket.
     events, co2_results, used_registry = get_events_from_registry(output_dir)
 
     if used_registry:
@@ -621,6 +632,9 @@ def run_particle_analysis(
             output_dir,
             create_synthetic=False,
         )
+
+    # Load particle data (inside series room-corrected using the events above)
+    particle_data = load_and_merge_quantaq_data(events)
 
     # Print event matching summary
     print("\nEvent Matching Summary:")
