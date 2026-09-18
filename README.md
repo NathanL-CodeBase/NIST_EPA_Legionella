@@ -63,7 +63,7 @@ NIST_EPA_Legionella/
 ├── fair-software.md                  # FAIR software principles compliance checklist
 ├── data_config.json                  # Active configuration (gitignored)
 ├── data_config.template.json         # Configuration template
-├── epa_mh.yml                        # Conda environment specification
+├── environment.yaml                  # Conda environment specification
 ├── run_analysis_workflow.py          # Convenience script to run the full analysis pipeline
 │
 ├── src/                              # Core analysis modules (imported by scripts)
@@ -143,7 +143,7 @@ NIST_EPA_Legionella/
 
 2. Create the conda environment:
    ```bash
-   conda env create -f epa_mh.yml
+   conda env create -f environment.yaml
    conda activate epa_mh
    ```
 
@@ -675,7 +675,7 @@ python scripts/export_config_timeseries_fleet.py --c-room
 
 ## Dependencies
 
-Key packages (see `epa_mh.yml` for complete list):
+Key packages (see `environment.yaml` for complete list):
 - pandas, numpy - Data manipulation
 - scipy - Numerical integration (trapezoidal rule for E_total calculation)
 - matplotlib - Publication-quality figure generation

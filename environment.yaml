@@ -1,0 +1,15 @@
+name: epa_mh
+channels:
+  - conda-forge
+dependencies:
+  - python=3.14
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - bokeh
+  - openpyxl
+  - requests
+  - python-dotenv
+  - pyyaml
+  - ipykernel
