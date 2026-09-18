@@ -130,6 +130,7 @@ def main() -> None:
         (["python", "scripts/co2_decay_analysis.py", "--entry-stop"], repo_root),
         (["python", "scripts/rh_temp_other_analysis.py"], repo_root),
         (["python", "scripts/particle_decay_analysis.py"], repo_root),
+        (["python", "scripts/particle_beta_emission_source_figures.py"], repo_root),
     ]
 
     for cmd, cwd in steps:

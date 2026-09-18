@@ -73,6 +73,7 @@ NIST_EPA_Legionella/
 │   ├── event_manager.py              # Event filtering, naming (MMDD_Temp_ToD_RNN), logging
 │   ├── event_matching.py             # Match CO2 injections to shower events by timing
 │   ├── particle_data_loader.py       # QuantAQ particle data loading and preparation
+│   ├── particle_room_correction.py   # Room-concentration correction for the "inside" series (C_room fleet average / pre-fleet ratio correction)
 │   ├── particle_calculations.py      # Penetration, deposition & emission calculations
 │   ├── plot_co2.py                   # CO2 decay visualization functions
 │   ├── plot_environmental.py         # RH, temperature, wind visualization
@@ -112,6 +113,7 @@ NIST_EPA_Legionella/
 │   │
 │   │ # Optional Figures
 │   ├── co2_lambda_source_figure.py   # Per-event λ_outside vs. λ_entry comparison figure with paired t-test
+│   ├── particle_beta_emission_source_figures.py  # Per-bin β/E entry vs. outside figures with the room-correction cutover marked
 │   ├── hobo_onset_decay_figures.py   # HOBO temp/RH onset & decay figures, plus per-event pre/post summary
 │   │
 │   │ # MODULAIR-PM Fleet Comparison (IAQ&V) — see README section below
@@ -308,7 +310,26 @@ Each step's output is logged to `output/logs/<script_name>.log`. Or run steps in
    by λ_outside, once by λ_entry — rather than blended into one value. See
    [Particle Decay & Emission Analysis](#particle-decay--emission-analysis) below.
 
-7. **Export Event Time Series** *(optional utility)*: Export predicted Ct for all size bins for a single event to CSV:
+   **New dependency:** the indoor ("inside") concentration is now room-corrected by
+   `src/particle_room_correction.py` before analysis (see the "Room-Concentration
+   Correction" note under [Particle Decay & Emission Analysis](#particle-decay--emission-analysis)),
+   which requires the MODULAIR-PM fleet chunk files to be reachable on the
+   `moduair_pm_chunks` share configured in `data_config.json` (see
+   [MODULAIR-PM Fleet Comparison](#modulair-pm-fleet-comparison-iaqv) below). This
+   reuses `scripts/moduair_cave_ratio.py`'s functions in-memory — that script does
+   not need to be run first. If the fleet chunks are unreachable, the step prints a
+   `[WARN]` and falls back to uncorrected raw MOD-PM-00195 for the whole record.
+
+7. **Particle Beta/Emission Source Figures**: Per-bin β/E entry-vs-outside figures with the room-correction cutover marked (requires step 6 results)
+   ```bash
+   python scripts/particle_beta_emission_source_figures.py [--output-dir DIR]
+   ```
+   Reads `particle_analysis_summary.xlsx`; does not recompute β or E. Produces
+   `output/plots/particle/beta_other_entry_outside_bin{N}.html` and
+   `output/plots/particle/emission_entry_outside_bin{N}.html` (12 bins each, 24
+   figures total).
+
+8. **Export Event Time Series** *(optional utility)*: Export predicted Ct for all size bins for a single event to CSV:
    ```bash
    python scripts/export_event_timeseries.py --event N [--output PATH] [--output-dir DIR] [--no-sig-figs]
    ```
@@ -319,7 +340,7 @@ Each step's output is logged to `output/logs/<script_name>.log`. Or run steps in
    | `--output-dir DIR` | Analysis output directory (default: `data_root/output`) |
    | `--no-sig-figs` | Disable significant figure rounding |
 
-8. **Export Config Time Series** *(optional utility)*: Export 1-minute averaged environmental and particle time series per unique test configuration to Excel:
+9. **Export Config Time Series** *(optional utility)*: Export 1-minute averaged environmental and particle time series per unique test configuration to Excel:
    ```bash
    python scripts/export_config_timeseries.py [--no-sig-figs]
    ```
@@ -329,13 +350,13 @@ Each step's output is logged to `output/logs/<script_name>.log`. Or run steps in
 
    Produces `output/event_config_timeseries.xlsx` with one sheet per configuration group. Each sheet contains the mean, standard deviation, maximum, and minimum (across replicate events) of bathroom RH/Temp, bath/bed hallway RH/Temp, bedroom RH/Temp, and all 12 OPC-N3 particle bins (0.35–10.0 µm) at 1-minute resolution from shower-on through the 2-hour deposition window. Flow rates in the 4.1–5.6 LPM range (standard and tagged variants) are grouped together; 1.4 LPM and 2.2 LPM events remain separate. A hyperlinked index sheet lists every configuration group with event counts and event numbers.
 
-9. **CO2 Lambda Source Comparison Figure** *(optional utility)*: Build a per-event λ_outside vs. λ_entry comparison figure with a paired t-test (requires step 4 results):
-   ```bash
-   python scripts/co2_lambda_source_figure.py
-   ```
-   Reads `co2_lambda_summary.csv`; does not recompute λ. Produces `output/plots/co2/co2_lambda_entry_outside.html`.
+10. **CO2 Lambda Source Comparison Figure** *(optional utility)*: Build a per-event λ_outside vs. λ_entry comparison figure with a paired t-test (requires step 4 results):
+    ```bash
+    python scripts/co2_lambda_source_figure.py
+    ```
+    Reads `co2_lambda_summary.csv`; does not recompute λ. Produces `output/plots/co2/co2_lambda_entry_outside.html`.
 
-10. **HOBO Onset/Decay Figures** *(optional utility)*: Build interactive HOBO temp/RH figures restricted to the onset (shower-on to +60 min) and decay (shower-off +60 to +120 min) windows around each event, plus a per-event pre/post summary:
+11. **HOBO Onset/Decay Figures** *(optional utility)*: Build interactive HOBO temp/RH figures restricted to the onset (shower-on to +60 min) and decay (shower-off +60 to +120 min) windows around each event, plus a per-event pre/post summary:
     ```bash
     python scripts/hobo_onset_decay_figures.py
     ```
@@ -516,6 +537,30 @@ bin**, once bounded by each source, so every λ-dependent result (β, E, Ct, R²
 reported as an outside/entry pair rather than a single value. Only the penetration
 factor (step 1) is λ-independent.
 
+**Room-concentration correction (`src/particle_room_correction.py`):** the indoor
+concentration C above is not the raw MOD-PM-00195 reading — it is corrected before
+analysis:
+- **2026-06-03 to 2026-07-16** (the MODULAIR-PM fleet co-location window; see
+  [MODULAIR-PM Fleet Comparison](#modulair-pm-fleet-comparison-iaqv)): C is replaced
+  with C_room(t), the position-weighted fleet average, at every minute where more
+  than 8 fleet sensors report; minutes at or below that threshold are left as NaN.
+- **Before 2026-06-03** (single-sensor period): C is the raw MOD-PM-00195 reading
+  everywhere *except* inside each event's analysis window (shower_on − 15 min
+  through deposition_end — the window covering steps 2–5's β, E, and peak-time
+  calculations below, but not step 1's wider before/after windows), where it is
+  corrected as `C_adjusted_room(t) = C_bed1(t) · C_room,average(minute) /
+  C_bed1,average(minute)`, using the per-minute averaged curves
+  `scripts/moduair_cave_ratio.py` computes from the fleet period, bucketed by the
+  event's water temperature: `< 38 °C` uses the `W24` ratio (n = 2 events),
+  `38–41 °C` inclusive uses `W38-W41`, and `> 41 °C` uses `W49` (n = 2 events) —
+  the only three buckets the fleet comparison has a ratio curve for.
+
+  The penetration factor (step 1) always uses the raw MOD-PM-00195/outside
+  reading, both before and after 2026-06-03, since its before/after windows fall
+  outside the range the fleet ratio curves cover. `particle_beta_emission_source_figures.py`
+  (workflow step 7) plots β and E per bin with a vertical line at 2026-06-03
+  marking this cutover.
+
 1. **Penetration factor (p):** Ratio of indoor to outdoor concentration averaged over before/after windows relative to the shower event; zeros excluded; capped at 1.
    - *QA:* Minimum 10 valid points per window (`MIN_POINTS_PENETRATION`); windows where this is not met are skipped.
    - Night event windows: before = 9 pm (day before) → 2 am; after = 9 am → 2 pm
@@ -584,6 +629,11 @@ events with a measured flow rate in `FLOW_RATE_MIN`–`FLOW_RATE_MAX` (4.1–5.6
 - `output/plots/comparison/bedroom_door_{metric}_{bin0-2,bin3-6,bin7-11}.png` - Comparison boxplots by bedroom door position
 - `output/plots/comparison/fan_status_{metric}_{bin0-2,bin3-6,bin7-11}.png` - Comparison boxplots by fan status
 
+`scripts/particle_beta_emission_source_figures.py` (workflow step 7) produces
+`output/plots/particle/beta_other_entry_outside_bin{N}.html` and
+`output/plots/particle/emission_entry_outside_bin{N}.html` from this workbook's
+`all_results` sheet — see the room-concentration correction note above.
+
 ### Relative Humidity, Temperature & Wind Analysis
 
 Run the environmental analysis to characterize conditions before and after shower events:
@@ -637,6 +687,15 @@ the same test facility. It characterizes sensor agreement, builds candidate
 inter-sensor correction factors for the historical 195 record, and evaluates a
 position-weighted fleet average (C_room) as an alternative bedroom concentration
 reference.
+
+**This is no longer a purely exploratory side analysis.** `moduair_cave_ratio.py`'s
+`compute_room_frame` / `group_average_curve` functions are reused in-memory by
+`src/particle_room_correction.py` to build the room-corrected "inside" concentration
+the main particle pipeline analyzes (see the room-concentration correction note under
+[Particle Decay & Emission Analysis](#particle-decay--emission-analysis)). That means
+`particle_decay_analysis.py` (workflow step 6) now also requires the `moduair_pm_chunks`
+share below to be reachable — but it does not require running `moduair_cave_ratio.py`
+as a script first.
 
 Fleet data are produced by the separate `NIST_moduair-pm` repository and read
 from the `moduair_pm_chunks` share configured in `data_config.json` — this is
