@@ -4,10 +4,11 @@
 Particle Room-Concentration Correction
 =======================================
 
-Builds the corrected indoor ("inside") particle concentration series consumed
-by scripts/particle_decay_analysis.py, replacing the single-sensor MOD-PM-00195
-reading with a position-weighted MODULAIR-PM fleet average where the fleet is
-available, and with a fleet-derived correction factor where it is not.
+Builds two alternative indoor ("inside") particle concentration series
+consumed by scripts/particle_decay_analysis.py, both replacing the
+single-sensor MOD-PM-00195 reading with a position-weighted MODULAIR-PM fleet
+average during the fleet co-location period, but differing in whether the
+pre-fleet-period segment is left raw or ratio-corrected.
 
 Background
 ----------
@@ -17,18 +18,22 @@ Before that period, MOD-PM-00195 was the only indoor sensor, so its reading
 carries a position-specific bias relative to well-mixed room air that the
 fleet comparison can correct for.
 
-Two regimes:
-    - 2026-06-03 to 2026-07-16 (fleet period): the "inside" concentration is
-      replaced with C_room(t), the position-weighted fleet average defined in
-      moduair_cave_ratio.py, at every timestamp where more than 8 fleet
-      sensors report (moduair_cave_ratio.MIN_QUANTS). Timestamps with 8 or
-      fewer reporting sensors are left as NaN; there is no fallback to the raw
-      sensor for those gaps.
-    - Before 2026-06-03: MOD-PM-00195 is corrected only inside each shower
-      event's analysis window (shower_on - 15 min through deposition_end, the
-      same window moduair_cave_ratio.py aligns events on -- the window that
-      covers the penetration-factor calculation's beta_other, E, and
-      peak-time windows), using:
+Two series, both sharing the same fleet-period replacement:
+    - 2026-06-03 to 2026-07-16 (fleet period, both series): the "inside"
+      concentration is replaced with C_room(t), the position-weighted fleet
+      average defined in moduair_cave_ratio.py, at every timestamp where more
+      than 8 fleet sensors report (moduair_cave_ratio.MIN_QUANTS). Timestamps
+      with 8 or fewer reporting sensors are left as NaN; there is no fallback
+      to the raw sensor for those gaps.
+    - Before 2026-06-03, build_raw_inside_data: MOD-PM-00195 is left as the
+      raw, uncorrected reading -- C_bed1(t). Feeds the E(t)1/E(t)2/E(t)4
+      emission-rate variants (src/particle_emission_variants.py), which are
+      the primary series used everywhere else in the pipeline.
+    - Before 2026-06-03, build_corrected_inside_data: MOD-PM-00195 is
+      corrected only inside each shower event's analysis window (shower_on -
+      15 min through deposition_end, the same window moduair_cave_ratio.py
+      aligns events on -- the window that covers the penetration-factor
+      calculation's beta_other, E, and peak-time windows), using:
           C_adjusted_room(t) = C_bed1(t) * C_room,average(minute) / C_bed1,average(minute)
       where the averaged curves come from moduair_cave_ratio.py's
       group_average_curve, computed once over the fleet period for whichever
@@ -39,13 +44,19 @@ Two regimes:
       These are the only three buckets moduair_cave_ratio.py computes a ratio
       curve for. Outside any event's window (e.g. the wider before/after
       windows the penetration-factor calculation uses), MOD-PM-00195 is left
-      uncorrected.
+      uncorrected. Feeds the E(t)3 emission-rate variant only, and only for
+      pre-cutover (single-monitor) events.
 
 Key Functions:
     - get_water_temp_bucket: Map a water-temp code to one of the three ratio
       buckets.
-    - build_corrected_inside_data: Build the full corrected "inside" DataFrame
-      consumed by src.particle_data_loader.load_and_merge_quantaq_data.
+    - build_raw_inside_data: Build the raw "inside" DataFrame (C_bed1(t)
+      pre-cutover, C_room(t) fleet period) for E(t)1/E(t)2/E(t)4.
+    - build_corrected_inside_data: Build the ratio-corrected "inside"
+      DataFrame (C_adjusted_room(t) pre-cutover, C_room(t) fleet period) for
+      E(t)3. Both consumed by
+      src.particle_data_loader.load_and_merge_quantaq_data via its
+      inside_builder parameter.
 
 Input Files:
     - QuantAQ MOD-PM-00195 processed CSVs (via
@@ -61,6 +72,11 @@ Institution: National Institute of Standards and Technology (NIST)
 Created: 2026-09-18
 Update log:
     2026-09-18  Initial version.
+    2026-09-22  Split build_corrected_inside_data's body into a shared
+        _build_inside_data helper and added build_raw_inside_data (skips the
+        pre-cutover ratio correction) so E(t)1/E(t)2/E(t)4 can use the raw
+        C_bed1(t)/C_room(t) series instead of the ratio-corrected one, per
+        the four-variant emission-rate table (src/particle_emission_variants.py).
 """
 
 from typing import Dict, List, Optional
@@ -148,9 +164,20 @@ def _ratio_at_minutes(curve: pd.Series, minutes: np.ndarray) -> np.ndarray:
 # =============================================================================
 
 
-def build_corrected_inside_data(events: List[Dict]) -> pd.DataFrame:
+def _build_inside_data(events: List[Dict], apply_pre_cutover_ratio: bool) -> pd.DataFrame:
     """
-    Build the corrected "inside" particle concentration series.
+    Build an "inside" particle concentration series, with the fleet-period
+    replacement always applied and the pre-cutover per-event ratio correction
+    applied only when requested.
+
+    Both public builders below share this body: the fleet period (2026-06-03
+    to 2026-07-16) is always replaced with C_room, the position-weighted fleet
+    average, at every timestamp where more than MIN_QUANTS sensors report.
+    They differ only in the pre-cutover segment:
+        apply_pre_cutover_ratio=True  -> C_adjusted_room(t) (ratio-corrected
+            MOD-PM-00195, per event water-temp bucket) -- build_corrected_inside_data
+        apply_pre_cutover_ratio=False -> raw C_bed1(t) (uncorrected MOD-PM-00195)
+            -- build_raw_inside_data
 
     Parameters
     ----------
@@ -159,13 +186,16 @@ def build_corrected_inside_data(events: List[Dict]) -> pd.DataFrame:
         particle_data_loader.get_events_from_registry (or the
         process_events_with_management fallback), each with at least
         shower_on, shower_off, deposition_end, and water_temp.
+    apply_pre_cutover_ratio : bool
+        If True, apply the per-event, water-temp-bucketed ratio correction to
+        MOD-PM-00195 before 2026-06-03. If False, leave that segment as the
+        raw MOD-PM-00195 reading.
 
     Returns
     -------
     pd.DataFrame
         Columns datetime, opc_bin0..opc_bin11, same shape as
-        particle_data_loader.load_quantaq_data("inside"), with the
-        fleet-period and pre-cutover corrections applied.
+        particle_data_loader.load_quantaq_data("inside").
     """
     # Local imports: particle_data_loader imports this module, so importing it
     # back at module scope would create a cycle.
@@ -187,7 +217,8 @@ def build_corrected_inside_data(events: List[Dict]) -> pd.DataFrame:
     raw_inside = load_quantaq_data("inside").set_index("datetime").sort_index()
     corrected = raw_inside.copy()
 
-    print("\nBuilding room-corrected inside concentration...")
+    label = "ratio-corrected (C_adjusted_room)" if apply_pre_cutover_ratio else "raw (C_bed1)"
+    print(f"\nBuilding inside concentration [{label} pre-cutover + C_room fleet period]...")
     print("  Loading MODULAIR-PM fleet data for room-concentration correction...")
     available = set(list_available_sensors("raw"))
     wanted = [sn for sn in (FLEET_SNS + [TARGET_SN]) if sn in available]
@@ -200,36 +231,38 @@ def build_corrected_inside_data(events: List[Dict]) -> pd.DataFrame:
         return corrected.reset_index()
 
     totals = build_position_totals(fleet)
-    groups = load_group_events(ROOM_CUTOVER, FLEET_END)
+    groups = load_group_events(ROOM_CUTOVER, FLEET_END) if apply_pre_cutover_ratio else {}
 
     fleet_index = pd.date_range(ROOM_CUTOVER, FLEET_END, freq="1min", name="datetime")
     fleet_frame = pd.DataFrame(index=fleet_index, columns=bin_cols, dtype=float)
 
     # Pre-cutover events: resolve each event's window and water-temp bucket once,
-    # shared across all 12 bins below.
+    # shared across all 12 bins below. Only needed when applying the ratio correction.
     pre_event_info = []
-    for event in events:
-        shower_on = event.get("shower_on")
-        if shower_on is None or pd.isna(shower_on) or shower_on >= ROOM_CUTOVER:
-            continue
-        bucket = get_water_temp_bucket(event.get("water_temp", ""))
-        if bucket is None:
-            continue
-        deposition_end = event.get("deposition_end")
-        if pd.isna(deposition_end):
-            deposition_end = event.get("shower_off", shower_on) + pd.Timedelta(
-                hours=DEPOSITION_WINDOW_HOURS
-            )
-        window_start = shower_on - PRE_SHOWER_LEAD
-        win_mask = (corrected.index >= window_start) & (corrected.index <= deposition_end)
-        idx = corrected.index[win_mask]
-        if len(idx) == 0:
-            continue
-        minute_offsets = ((idx - shower_on).total_seconds() / 60).round().astype(int)
-        pre_event_info.append((idx, minute_offsets, bucket))
+    if apply_pre_cutover_ratio:
+        for event in events:
+            shower_on = event.get("shower_on")
+            if shower_on is None or pd.isna(shower_on) or shower_on >= ROOM_CUTOVER:
+                continue
+            bucket = get_water_temp_bucket(event.get("water_temp", ""))
+            if bucket is None:
+                continue
+            deposition_end = event.get("deposition_end")
+            if pd.isna(deposition_end):
+                deposition_end = event.get("shower_off", shower_on) + pd.Timedelta(
+                    hours=DEPOSITION_WINDOW_HOURS
+                )
+            window_start = shower_on - PRE_SHOWER_LEAD
+            win_mask = (corrected.index >= window_start) & (corrected.index <= deposition_end)
+            idx = corrected.index[win_mask]
+            if len(idx) == 0:
+                continue
+            minute_offsets = ((idx - shower_on).total_seconds() / 60).round().astype(int)
+            pre_event_info.append((idx, minute_offsets, bucket))
 
     print(f"  Fleet-period replacement window: {len(fleet_index)} minutes")
-    print(f"  Pre-cutover events to correct: {len(pre_event_info)}")
+    if apply_pre_cutover_ratio:
+        print(f"  Pre-cutover events to correct: {len(pre_event_info)}")
 
     for bin_num in PARTICLE_BINS:
         bin_col = f"opc_bin{bin_num}"
@@ -244,6 +277,9 @@ def build_corrected_inside_data(events: List[Dict]) -> pd.DataFrame:
         # Fleet period: full continuous replacement, masked to the >8-sensor filter.
         c_room = cave["C_room"].where(cave["n_sensors"] > MIN_QUANTS)
         fleet_frame[bin_col] = c_room.reindex(fleet_index)
+
+        if not apply_pre_cutover_ratio:
+            continue
 
         # Pre-cutover: one ratio curve per bucket, built from this bin's fleet data.
         bucket_curves: Dict[str, pd.Series] = {}
@@ -268,3 +304,45 @@ def build_corrected_inside_data(events: List[Dict]) -> pd.DataFrame:
     post_fleet_part = corrected[corrected.index > FLEET_END]
     result = pd.concat([pre_part, fleet_frame, post_fleet_part]).sort_index()
     return result.reset_index().rename(columns={"index": "datetime"})
+
+
+def build_corrected_inside_data(events: List[Dict]) -> pd.DataFrame:
+    """
+    Build the ratio-corrected "inside" particle concentration series
+    (C_adjusted_room(t) pre-cutover, C_room(t) during the fleet period).
+
+    Used for the E(t)3 emission-rate variant only (single-monitor events,
+    prior to 2026-06-03/06-02).
+
+    Parameters
+    ----------
+    events : list of dict
+        See _build_inside_data.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns datetime, opc_bin0..opc_bin11.
+    """
+    return _build_inside_data(events, apply_pre_cutover_ratio=True)
+
+
+def build_raw_inside_data(events: List[Dict]) -> pd.DataFrame:
+    """
+    Build the raw "inside" particle concentration series (uncorrected
+    C_bed1(t) pre-cutover, C_room(t) during the fleet period).
+
+    Used for the E(t)1, E(t)2, and E(t)4 emission-rate variants (the primary
+    concentration series consumed everywhere else in the pipeline).
+
+    Parameters
+    ----------
+    events : list of dict
+        See _build_inside_data.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns datetime, opc_bin0..opc_bin11.
+    """
+    return _build_inside_data(events, apply_pre_cutover_ratio=False)

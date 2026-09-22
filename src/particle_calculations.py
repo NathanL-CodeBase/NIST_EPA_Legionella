@@ -87,6 +87,14 @@ Output Files:
 Author: Nathan Lima
 Institution: National Institute of Standards and Technology (NIST)
 Date: 2026
+Update log:
+    2026-09-22  calculate_emission_rate and calculate_ct_prediction accept an
+        optional volume_m3 parameter (default BEDROOM_VOLUME_M3) so the same
+        functions can be called with BEDROOM_BATHROOM_VOLUME_M3 for the
+        bathroom-included emission-rate variant (see
+        src/particle_emission_variants.py). BEDROOM_VOLUME_M3 precision
+        updated to the CAD value 36.1086 m³ (was 36.1); BEDROOM_BATHROOM_VOLUME_M3
+        (54.5868 m³) added.
 """
 
 from datetime import datetime, timedelta
@@ -117,7 +125,13 @@ PARTICLE_BINS = {
 }
 
 # Physical parameters
-BEDROOM_VOLUME_M3 = 36.1  # Bedroom volume in cubic meters (36.10859771 m³ from CAD)
+BEDROOM_VOLUME_M3 = 36.1086  # Bedroom volume in cubic meters (CAD); default control
+# volume for the emission rate (E) and Ct prediction, and the only volume used for
+# the penetration factor and other-process-rate calculations (volume-independent).
+BEDROOM_BATHROOM_VOLUME_M3 = 54.5868  # Bedroom + bathroom combined control volume
+# (CAD); alternate volume for the bathroom-included emission-rate sensitivity
+# variant (E(t)4) only, passed explicitly to calculate_emission_rate/
+# calculate_ct_prediction as volume_m3.
 CM3_PER_M3 = 1e6  # Conversion factor: cubic centimeters per cubic meter
 
 # Analysis timing parameters
@@ -672,6 +686,7 @@ def calculate_emission_rate(
     p: float,
     lambda_ach: float,
     beta: float,
+    volume_m3: float = BEDROOM_VOLUME_M3,
 ) -> Dict:
     """
     Calculate emission rate (E) from shower start to peak concentration.
@@ -708,6 +723,8 @@ def calculate_emission_rate(
         p (float): Penetration factor
         lambda_ach (float): Air change rate (h⁻¹)
         beta (float): Other process rate (h⁻¹)
+        volume_m3 (float): Control volume in m³ (default BEDROOM_VOLUME_M3);
+            pass BEDROOM_BATHROOM_VOLUME_M3 for the bathroom-included variant
 
     Returns:
         Dict: Dictionary with E_mean, E_std, E_total statistics (#/min, #);
@@ -741,9 +758,7 @@ def calculate_emission_rate(
     c_outside = np.asarray(shower_data[col_outside].values, dtype=np.float64)
     datetimes_arr = shower_data["datetime"].values  # timestamps for per-step output
 
-    V = (
-        BEDROOM_VOLUME_M3 * CM3_PER_M3
-    )  # Convert m³ to cm³ for concentration units (#/cm³)
+    V = volume_m3 * CM3_PER_M3  # Convert m³ to cm³ for concentration units (#/cm³)
     dt_minutes = TIME_STEP_MINUTES  # minutes
 
     # Calculate E for each time step
@@ -829,6 +844,7 @@ def calculate_ct_prediction(
     beta: float,
     E_mean: float,
     peak_time: datetime,
+    volume_m3: float = BEDROOM_VOLUME_M3,
 ) -> Dict:
     """
     Simulate indoor particle concentration using forward Euler method.
@@ -862,6 +878,8 @@ def calculate_ct_prediction(
         E_mean (float): Mean emission rate during shower (#/min); use 0.0
                         to compute a decay-only prediction
         peak_time (datetime): Time of peak concentration (E=0 after this)
+        volume_m3 (float): Control volume in m³ (default BEDROOM_VOLUME_M3);
+            pass BEDROOM_BATHROOM_VOLUME_M3 for the bathroom-included variant
 
     Returns:
         Dict with keys 'datetimes', 'predicted_ct', 'emission_datetimes',
@@ -888,7 +906,7 @@ def calculate_ct_prediction(
     datetimes = sim_data["datetime"].values
 
     # Volume in cm³ (concentration units are #/cm³)
-    V = BEDROOM_VOLUME_M3 * CM3_PER_M3
+    V = volume_m3 * CM3_PER_M3
 
     # Time step in hours (data is at 1-minute intervals after resampling)
     dt_hours = TIME_STEP_MINUTES / 60.0

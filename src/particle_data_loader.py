@@ -12,9 +12,10 @@ scripts/particle_decay_analysis.py and is not run directly.
 Key Functions:
     - load_quantaq_data: Load all processed QuantAQ CSV chunks for 'inside' or
       'outside'; concatenate, deduplicate, and return particle-bin DataFrame.
-    - load_and_merge_quantaq_data: Load both locations (inside room-corrected via
-      src.particle_room_correction), merge on datetime, resample to 1-min
-      intervals, interpolate short gaps, and apply rolling average.
+    - load_and_merge_quantaq_data: Load both locations (inside built via one of
+      src.particle_room_correction's two builders, selected by inside_builder),
+      merge on datetime, resample to 1-min intervals, interpolate short gaps,
+      and apply rolling average.
     - load_shower_log: Load the shower valve state-change log; convert timestamps.
     - load_co2_lambda_results: Load CO₂ decay lambda results; rename unit-annotated
       column headers to clean internal names.
@@ -62,11 +63,20 @@ Output Files:
 Author: Nathan Lima
 Institution: National Institute of Standards and Technology (NIST)
 Date: 2026
+Update log:
+    2026-09-22  load_and_merge_quantaq_data accepts an inside_builder
+        parameter (default src.particle_room_correction.build_raw_inside_data)
+        so scripts/particle_decay_analysis.py can build both the primary
+        (raw C_bed1(t)/C_room(t)) and adjusted (ratio-corrected
+        C_adjusted_room(t)) inside series for the four-variant emission-rate
+        calculation (src/particle_emission_variants.py). The default inside
+        series changed from the ratio-corrected one to the raw one -- see
+        src/particle_emission_variants.py for why.
 """
 
 from datetime import timedelta
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -142,27 +152,44 @@ def load_quantaq_data(location: str) -> pd.DataFrame:
     return combined
 
 
-def load_and_merge_quantaq_data(events: List[Dict]) -> pd.DataFrame:
+def load_and_merge_quantaq_data(
+    events: List[Dict],
+    inside_builder: Optional[Callable[[List[Dict]], pd.DataFrame]] = None,
+) -> pd.DataFrame:
     """
     Load and merge QuantAQ inside and outside data into a single DataFrame.
 
     The inside series is room-corrected before merging: see
     src.particle_room_correction for the 2026-06-03 fleet-average substitution
-    and the pre-2026-06-03 per-event ratio correction.
+    and the pre-2026-06-03 per-event correction. Two builders are available
+    there -- build_raw_inside_data (raw C_bed1(t) pre-cutover, default) and
+    build_corrected_inside_data (ratio-corrected C_adjusted_room(t)
+    pre-cutover) -- both share the same fleet-period C_room(t) replacement and
+    differ only in the pre-cutover segment. See
+    src/particle_emission_variants.py for which emission-rate variant each
+    feeds.
 
     Parameters:
         events (List[Dict]): Event dicts (from get_events_from_registry or the
             process_events_with_management fallback) used to determine each
             pre-2026-06-03 event's correction window and water-temp bucket.
+        inside_builder (Callable, optional): Function building the "inside"
+            DataFrame from events, one of src.particle_room_correction's
+            build_raw_inside_data or build_corrected_inside_data. Defaults to
+            build_raw_inside_data (the primary series used everywhere in the
+            pipeline except the E(t)3 emission-rate variant).
 
     Returns:
         pd.DataFrame: DataFrame with columns for inside and outside particle bins
     """
-    from src.particle_room_correction import build_corrected_inside_data
+    from src.particle_room_correction import build_raw_inside_data
+
+    if inside_builder is None:
+        inside_builder = build_raw_inside_data
 
     print("\nLoading QuantAQ particle data...")
 
-    inside_data = build_corrected_inside_data(events)
+    inside_data = inside_builder(events)
     outside_data = load_quantaq_data("outside")
 
     # Rename columns to distinguish inside vs outside

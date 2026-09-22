@@ -106,14 +106,14 @@ NIST_EPA_Legionella/
 │   │
 │   │ # Analysis
 │   ├── co2_decay_analysis.py         # CO2 decay & air change rate (λ) analysis
-│   ├── particle_decay_analysis.py    # Particle penetration, deposition & emission analysis (bounded by λ_outside/λ_entry)
+│   ├── particle_decay_analysis.py    # Particle penetration, deposition & 4-variant emission analysis (E1-E4; per-event figures)
+│   ├── particle_emission_variant_figures.py  # Run after particle_decay_analysis.py: per-bin E1/E2/E3/E4 comparison figures + all summary/boxplot/comparison figures
 │   ├── rh_temp_other_analysis.py     # RH, temperature & wind condition analysis
 │   ├── export_event_timeseries.py    # Export per-event predicted Ct for all size bins to CSV (--event N)
 │   ├── export_config_timeseries.py   # Export 1-min avg env/particle time series per config group to Excel
 │   │
 │   │ # Optional Figures
 │   ├── co2_lambda_source_figure.py   # Per-event λ_outside vs. λ_entry comparison figure with paired t-test
-│   ├── particle_beta_emission_source_figures.py  # Per-bin β/E entry vs. outside figures with the room-correction cutover marked
 │   ├── hobo_onset_decay_figures.py   # HOBO temp/RH onset & decay figures, plus per-event pre/post summary
 │   │
 │   │ # MODULAIR-PM Fleet Comparison (IAQ&V) — see README section below
@@ -303,12 +303,14 @@ Each step's output is logged to `output/logs/<script_name>.log`. Or run steps in
    | Flag | Description |
    |------|-------------|
    | `--output-dir DIR` | Output directory (default: `data_root/output`) |
-   | `--no-plot` | Disable plot generation |
+   | `--no-plot` | Disable per-event `pm_decay` figure generation |
    | `--no-sig-figs` | Disable significant figure rounding (default: 3 sig figs for files, 2 for figures) |
 
-   Every λ-dependent result (β, E, Ct, R²) is computed twice per bin — once bounded
-   by λ_outside, once by λ_entry — rather than blended into one value. See
-   [Particle Decay & Emission Analysis](#particle-decay--emission-analysis) below.
+   Four emission-rate variants (E1-E4) are computed per bin, per the report's
+   Table 7 / Equation 10, rather than one value bounded by λ_outside/λ_entry alone.
+   See [Particle Decay & Emission Analysis](#particle-decay--emission-analysis) below.
+   Summary/boxplot/comparison figures moved to step 7 below; this step only
+   generates the per-event `pm_decay` figures and the Excel results.
 
    **New dependency:** the indoor ("inside") concentration is now room-corrected by
    `src/particle_room_correction.py` before analysis (see the "Room-Concentration
@@ -320,14 +322,17 @@ Each step's output is logged to `output/logs/<script_name>.log`. Or run steps in
    not need to be run first. If the fleet chunks are unreachable, the step prints a
    `[WARN]` and falls back to uncorrected raw MOD-PM-00195 for the whole record.
 
-7. **Particle Beta/Emission Source Figures**: Per-bin β/E entry-vs-outside figures with the room-correction cutover marked (requires step 6 results)
+7. **Particle Emission Variant Figures**: Per-bin E1/E2/E3/E4 comparison figures, plus all summary/boxplot/comparison figures (requires step 6 results)
    ```bash
-   python scripts/particle_beta_emission_source_figures.py [--output-dir DIR]
+   python scripts/particle_emission_variant_figures.py [--output-dir DIR]
    ```
-   Reads `particle_analysis_summary.xlsx`; does not recompute β or E. Produces
-   `output/plots/particle/beta_other_entry_outside_bin{N}.html` and
-   `output/plots/particle/emission_entry_outside_bin{N}.html` (12 bins each, 24
-   figures total).
+   Reads `particle_analysis_summary.xlsx`; does not recompute p, β, or E. Produces
+   the per-bin `beta_other_{pair}_bin{N}.html` / `emission_{pair}_bin{N}.html`
+   comparison figures for three variant pairs (`entry_outside`, `outside_adjusted`,
+   `outside_bathroom`; 12 bins × 2 metrics × 3 pairs = 72 figures) under
+   `output/plots/particle/`, plus the full summary/boxplot/comparison figure suite
+   (bar charts, fixed- and metric-axis boxplots, and the 5 condition-comparison
+   families) under `output/plots/` — moved here from step 6.
 
 8. **Export Event Time Series** *(optional utility)*: Export predicted Ct for all size bins for a single event to CSV:
    ```bash
@@ -512,10 +517,10 @@ python scripts/co2_decay_analysis.py --no-plot --output-dir /path/to/output
 Run the particle decay analysis to calculate penetration factors, deposition rates, and emission rates across **12 OPC-N3 size bins (0.35–10.0 µm)**:
 
 ```bash
-# Run particle analysis (requires CO2 analysis results; plots enabled by default)
+# Run particle analysis (requires CO2 analysis results; per-event figures enabled by default)
 python scripts/particle_decay_analysis.py
 
-# Skip plots
+# Skip the per-event pm_decay figures
 python scripts/particle_decay_analysis.py --no-plot
 
 # Write to a custom directory without significant figure rounding
@@ -531,41 +536,59 @@ V·dC/dt = p·Q·C_out - Q·C - β·C·V + E
 dC/dt = p·λ·C_out - λ·C - β·C + E/V
 ```
 
-Two independent air-change rates come out of the CO2 decay analysis: λ_outside and
-λ_entry. Rather than blending them into one λ, steps 2–6 below run **twice per
-bin**, once bounded by each source, so every λ-dependent result (β, E, Ct, R²) is
-reported as an outside/entry pair rather than a single value. Only the penetration
-factor (step 1) is λ-independent.
+Rather than commit to one set of inputs, four emission-rate variants (E1-E4) are
+computed per bin, per the report's Table 7 / Equation 10 — each variant fixes a
+full combination of air-change-rate source, concentration series, and control
+volume:
+
+| Variant | Columns | λ source | Concentration series | Volume |
+|---|---|---|---|---|
+| E(t)1 | `bin{n}_outside_*` | λ_outside | primary (raw C_bed1(t) / fleet C_room(t)) | 36.1086 m³ (bedroom) |
+| E(t)2 | `bin{n}_entry_*` | λ_entry | primary (same as E1) | 36.1086 m³ |
+| E(t)3 | `bin{n}_adjusted_*` | λ_outside | adjusted (ratio-corrected C_adjusted_room(t)) | 36.1086 m³ |
+| E(t)4 | `bin{n}_bathroom_*` | λ_outside | primary (same as E1) | 54.5868 m³ (bedroom + bathroom) |
+
+E1 is the value the ~45 water-temp/spray-pattern/door/etc. boxplots and
+comparison figures use. E2 brackets E1 against the entry-zone λ estimate. E3
+is restricted to pre-cutover (single-monitor) events — post-cutover cells are
+NaN — since C_adjusted_room(t) corrects a single-sensor position bias that
+doesn't apply once the fleet is in place. E4 reuses E1's β (no volume term in
+the β fit) and only reruns the emission/Ct steps with the larger volume. See
+`src/particle_emission_variants.py` for the full per-bin implementation.
 
 **Room-concentration correction (`src/particle_room_correction.py`):** the indoor
-concentration C above is not the raw MOD-PM-00195 reading — it is corrected before
-analysis:
+concentration C above is not the raw MOD-PM-00195 reading for every variant.
+Two series are built, both sharing the same fleet-period replacement:
 - **2026-06-03 to 2026-07-16** (the MODULAIR-PM fleet co-location window; see
-  [MODULAIR-PM Fleet Comparison](#modulair-pm-fleet-comparison-iaqv)): C is replaced
-  with C_room(t), the position-weighted fleet average, at every minute where more
-  than 8 fleet sensors report; minutes at or below that threshold are left as NaN.
-- **Before 2026-06-03** (single-sensor period): C is the raw MOD-PM-00195 reading
-  everywhere *except* inside each event's analysis window (shower_on − 15 min
-  through deposition_end — the window covering steps 2–5's β, E, and peak-time
-  calculations below, but not step 1's wider before/after windows), where it is
-  corrected as `C_adjusted_room(t) = C_bed1(t) · C_room,average(minute) /
-  C_bed1,average(minute)`, using the per-minute averaged curves
-  `scripts/moduair_cave_ratio.py` computes from the fleet period, bucketed by the
-  event's water temperature: `< 38 °C` uses the `W24` ratio (n = 2 events),
-  `38–41 °C` inclusive uses `W38-W41`, and `> 41 °C` uses `W49` (n = 2 events) —
-  the only three buckets the fleet comparison has a ratio curve for.
+  [MODULAIR-PM Fleet Comparison](#modulair-pm-fleet-comparison-iaqv)), both
+  series: C is replaced with C_room(t), the position-weighted fleet average, at
+  every minute where more than 8 fleet sensors report; minutes at or below that
+  threshold are left as NaN.
+- **Before 2026-06-03**, primary series (`build_raw_inside_data`, feeds E1/E2/E4):
+  C is left as the raw MOD-PM-00195 reading.
+- **Before 2026-06-03**, adjusted series (`build_corrected_inside_data`, feeds
+  E3 only): C is corrected inside each event's analysis window (shower_on − 15
+  min through deposition_end) as `C_adjusted_room(t) = C_bed1(t) ·
+  C_room,average(minute) / C_bed1,average(minute)`, using the per-minute
+  averaged curves `scripts/moduair_cave_ratio.py` computes from the fleet
+  period, bucketed by the event's water temperature: `< 38 °C` uses the `W24`
+  ratio (n = 2 events), `38–41 °C` inclusive uses `W38-W41`, and `> 41 °C` uses
+  `W49` (n = 2 events) — the only three buckets the fleet comparison has a
+  ratio curve for. Outside any event's window, the adjusted series is left raw.
 
   The penetration factor (step 1) always uses the raw MOD-PM-00195/outside
-  reading, both before and after 2026-06-03, since its before/after windows fall
-  outside the range the fleet ratio curves cover. `particle_beta_emission_source_figures.py`
-  (workflow step 7) plots β and E per bin with a vertical line at 2026-06-03
-  marking this cutover.
+  reading for the primary series, both before and after 2026-06-03, since its
+  before/after windows fall outside the range the fleet ratio curves cover; E3
+  computes its own independent penetration factor on the adjusted series.
+  `particle_emission_variant_figures.py` (workflow step 7) plots β and E per
+  bin, per comparison pair, with a vertical line at 2026-06-03 marking this
+  cutover.
 
 1. **Penetration factor (p):** Ratio of indoor to outdoor concentration averaged over before/after windows relative to the shower event; zeros excluded; capped at 1.
    - *QA:* Minimum 10 valid points per window (`MIN_POINTS_PENETRATION`); windows where this is not met are skipped.
    - Night event windows: before = 9 pm (day before) → 2 am; after = 9 am → 2 pm
    - Day event windows: before = 9 am → 2 pm; after = 9 pm → 2 am (next day)
-2. **Air change rate (λ):** λ_outside and λ_entry loaded from CO2 decay analysis results (h⁻¹); steps 3–6 repeat once per source.
+2. **Air change rate (λ):** λ_outside and λ_entry loaded from CO2 decay analysis results (h⁻¹); steps 3–6 repeat once per variant (E4 reuses E1's β; see the variant table above).
 3. **Other process rate (β, numerical):** Step-by-step solution during the 2-hour (`DEPOSITION_WINDOW_HOURS`) post-shower decay window; beta solved at each time step from the discrete mass balance:
    ```
    β = 1/dt - λ - C_{t+1}/(C_t·dt) + p·λ·(C_out,t / C_t)
@@ -578,27 +601,36 @@ analysis:
    - Emission R² (E_r_squared): R² of the emission-phase simulation vs. measured indoor concentration from shower ON to peak.
 6. **Total emission (E_total):** Trapezoidal rule area under the E_t vs. time curve from shower ON to peak; negative per-step contributions clipped to 0.
 
-**Output Files:**
+**Output Files (this script):**
 
-Sheets/columns marked "doubled" carry two variants, `bin{n}_outside_...` and
-`bin{n}_entry_...`, one per λ source; the Excel workbook retains every event
-regardless of flow rate, but the boxplot/comparison figures below only include
-events with a measured flow rate in `FLOW_RATE_MIN`–`FLOW_RATE_MAX` (4.1–5.6 LPM).
+Sheets/columns marked "doubled" carry the E1/E2 variants, `bin{n}_outside_...`
+and `bin{n}_entry_...`; `all_results` additionally carries the E3
+(`bin{n}_adjusted_...`, including its own independent
+`bin{n}_adjusted_p_mean`/`p_std`/`peak_time`) and E4 (`bin{n}_bathroom_...`)
+variants. The Excel workbook retains every event regardless of flow rate.
 
 - `output/particle_analysis_summary.xlsx` - Multi-sheet Excel workbook:
-  - `all_results` — Full results table (all metrics per event and bin)
-  - `p_penetration` — Penetration factors per event and bin (includes test_name); λ-independent
+  - `all_results` — Full results table (all metrics, all four variants, per event and bin)
+  - `p_penetration` — Penetration factors per event and bin (includes test_name); primary series (E1/E2/E4 share this)
   - `beta_deposition` — Other process rates per event and bin (includes test_name); doubled
   - `beta_r_squared` — R² of forward Euler decay fit per event and bin (includes test_name); doubled
   - `E_emission` — Emission rates per event and bin (includes test_name); doubled
   - `E_total_particles` — Total emitted particle counts (E_total) per bin (includes test_name); doubled
   - `E_r_squared` — R² of forward Euler emission-phase simulation per bin (includes test_name); doubled
   - `peak_comparison` — Measured vs. predicted concentration at peak_time and deposition_end (wide format, one row per event); predicted columns doubled
-- `output/plots/event_figures/pm_decay/event_NN-testname_pm_decay.png` - Individual event decay curves (four-panel)
-  - *Top panel:* Measured concentration (solid) and continuous predicted Ct (dashed); shower ON/OFF dotted markers; optional outdoor PM overlay for events in `OUTDOOR_PM_EVENTS` (currently events 75–85)
+- `output/plots/event_figures/pm_decay/event_NN-testname_pm_decay.png` - Individual event decay curves (four-panel), E1 (outside) variant only
+  - *Top panel:* Measured concentration (solid) and continuous predicted Ct (dashed); shower ON/OFF dotted markers; optional outdoor PM overlay for events in `OUTDOOR_PM_EVENTS`
   - *Emission panels (×3):* Bins 0–2, 3–6, and 7–11; per-step E_t as faint lines; E_mean as dashed horizontal line; emission R² annotation; x-axes match concentration panel
 - `output/plots/event_figures/excluded_events/` - Figures for duration-excluded (water-temperature-testing) events
 
+**Output Files (`particle_emission_variant_figures.py`, workflow step 7):**
+
+Reads `particle_analysis_summary.xlsx`'s `all_results` sheet; does not
+recompute p, β, or E. The boxplot/comparison figures below only include events
+with a measured flow rate in `FLOW_RATE_MIN`–`FLOW_RATE_MAX` (4.1–5.6 LPM),
+outside/entry (E1/E2) only.
+
+- `output/plots/particle/beta_other_{pair}_bin{N}.html`, `output/plots/particle/emission_{pair}_bin{N}.html` - Per-bin variant comparison figures (interactive), for `pair` in `entry_outside` (E2 vs. E1), `outside_adjusted` (E3 vs. E1, pre-cutover only), `outside_bathroom` (E4 vs. E1); 12 bins × 2 metrics × 3 pairs = 72 figures. A vertical line at 2026-06-03 marks the room-correction cutover.
 - `output/plots/penetration_summary.png` - Bar chart summary of penetration factors by size (λ-independent, one file)
 - `output/plots/deposition_summary_{outside,entry}.png` - Bar chart summary of other process rates by size, one file per λ source
 - `output/plots/emission_summary_{outside,entry}.png` - Bar chart summary of emission rates by size, one file per λ source
@@ -629,10 +661,8 @@ events with a measured flow rate in `FLOW_RATE_MIN`–`FLOW_RATE_MAX` (4.1–5.6
 - `output/plots/comparison/bedroom_door_{metric}_{bin0-2,bin3-6,bin7-11}.png` - Comparison boxplots by bedroom door position
 - `output/plots/comparison/fan_status_{metric}_{bin0-2,bin3-6,bin7-11}.png` - Comparison boxplots by fan status
 
-`scripts/particle_beta_emission_source_figures.py` (workflow step 7) produces
-`output/plots/particle/beta_other_entry_outside_bin{N}.html` and
-`output/plots/particle/emission_entry_outside_bin{N}.html` from this workbook's
-`all_results` sheet — see the room-concentration correction note above.
+See the room-concentration correction note above for what the primary vs.
+adjusted concentration series feed.
 
 ### Relative Humidity, Temperature & Wind Analysis
 
