@@ -94,7 +94,7 @@ Update log:
         bathroom-included emission-rate variant (see
         src/particle_emission_variants.py). BEDROOM_VOLUME_M3 precision
         updated to the CAD value 36.1086 m³ (was 36.1); BEDROOM_BATHROOM_VOLUME_M3
-        (54.5868 m³) added.
+        (52.9903 m³) added.
 """
 
 from datetime import datetime, timedelta
@@ -128,7 +128,7 @@ PARTICLE_BINS = {
 BEDROOM_VOLUME_M3 = 36.1086  # Bedroom volume in cubic meters (CAD); default control
 # volume for the emission rate (E) and Ct prediction, and the only volume used for
 # the penetration factor and other-process-rate calculations (volume-independent).
-BEDROOM_BATHROOM_VOLUME_M3 = 54.5868  # Bedroom + bathroom combined control volume
+BEDROOM_BATHROOM_VOLUME_M3 = 52.9903  # Bedroom + bathroom combined control volume
 # (CAD); alternate volume for the bathroom-included emission-rate sensitivity
 # variant (E(t)4) only, passed explicitly to calculate_emission_rate/
 # calculate_ct_prediction as volume_m3.
@@ -193,9 +193,7 @@ def get_penetration_windows(
     shower_date = shower_on.replace(hour=0, minute=0, second=0, microsecond=0)
 
     # Classify as night or day event
-    is_night_event = time_of_day == "Night" or (
-        time_of_day == "" and shower_on.hour < 12
-    )
+    is_night_event = time_of_day == "Night" or (time_of_day == "" and shower_on.hour < 12)
 
     if is_night_event:
         # 3am event: before = 8pm (day before) to 2am (day of)  [6 h window]
@@ -240,9 +238,7 @@ def _calculate_p_for_window(
     col_outside = f"{bin_info['column']}_outside"
 
     # Filter to window
-    mask = (particle_data["datetime"] >= window_start) & (
-        particle_data["datetime"] <= window_end
-    )
+    mask = (particle_data["datetime"] >= window_start) & (particle_data["datetime"] <= window_end)
     window_data = particle_data[mask].copy()
 
     if len(window_data) < MIN_POINTS_PENETRATION:
@@ -257,12 +253,7 @@ def _calculate_p_for_window(
     c_outside = np.asarray(window_data[col_outside].values, dtype=np.float64)
 
     # Remove invalid points: exclude zeros and NaNs
-    valid_mask = (
-        (c_inside > 0)
-        & (c_outside > 0)
-        & (~np.isnan(c_inside))
-        & (~np.isnan(c_outside))
-    )
+    valid_mask = (c_inside > 0) & (c_outside > 0) & (~np.isnan(c_inside)) & (~np.isnan(c_outside))
 
     if np.sum(valid_mask) < MIN_POINTS_PENETRATION:
         return {
@@ -395,9 +386,7 @@ def find_peak_time(
     bin_info = PARTICLE_BINS[bin_num]
     col_inside = f"{bin_info['column']}_inside"
 
-    mask = (particle_data["datetime"] >= window_start) & (
-        particle_data["datetime"] <= window_end
-    )
+    mask = (particle_data["datetime"] >= window_start) & (particle_data["datetime"] <= window_end)
     window_data = particle_data[mask]
 
     if len(window_data) < MIN_POINTS_OTHER_PROCESS:
@@ -522,9 +511,7 @@ def calculate_other_process_rate(
     }
 
     # Filter to the fixed beta fit window
-    mask = (particle_data["datetime"] >= window_start) & (
-        particle_data["datetime"] <= window_end
-    )
+    mask = (particle_data["datetime"] >= window_start) & (particle_data["datetime"] <= window_end)
     decay_data = particle_data[mask].copy()
 
     if len(decay_data) < MIN_POINTS_OTHER_PROCESS:
@@ -569,10 +556,7 @@ def calculate_other_process_rate(
             continue
 
         beta_t = (
-            (1.0 / dt_h)
-            - lambda_ach
-            - (c_t_next / (c_t * dt_h))
-            + p * lambda_ach * (c_out_t / c_t)
+            (1.0 / dt_h) - lambda_ach - (c_t_next / (c_t * dt_h)) + p * lambda_ach * (c_out_t / c_t)
         )
 
         # Reject only unphysically large positive outliers
@@ -658,9 +642,7 @@ def calculate_other_process_rate(
 
     # Steady-state concentration (using mean outdoor concentration)
     total_loss = lambda_ach + beta_val
-    c_steady_state = (
-        p * lambda_ach * c_outside_mean / total_loss if total_loss > 0 else 0.0
-    )
+    c_steady_state = p * lambda_ach * c_outside_mean / total_loss if total_loss > 0 else 0.0
 
     return {
         "beta": beta_val,
@@ -736,9 +718,7 @@ def calculate_emission_rate(
     col_outside = f"{bin_info['column']}_outside"
 
     # Filter to emission window: shower_on to peak_time
-    mask = (particle_data["datetime"] >= shower_on) & (
-        particle_data["datetime"] <= peak_time
-    )
+    mask = (particle_data["datetime"] >= shower_on) & (particle_data["datetime"] <= peak_time)
     shower_data = particle_data[mask].copy()
 
     if len(shower_data) < MIN_POINTS_EMISSION:
@@ -893,9 +873,7 @@ def calculate_ct_prediction(
     col_outside = f"{bin_info['column']}_outside"
 
     # Simulation window: shower_on to deposition_end (shower_off + 2h)
-    mask = (particle_data["datetime"] >= shower_on) & (
-        particle_data["datetime"] <= deposition_end
-    )
+    mask = (particle_data["datetime"] >= shower_on) & (particle_data["datetime"] <= deposition_end)
     sim_data = particle_data[mask].copy()
 
     if len(sim_data) < 2:

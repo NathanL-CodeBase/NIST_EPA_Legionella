@@ -55,7 +55,6 @@ from src.plot_style import (
     save_figure,
 )
 
-
 # =============================================================================
 # PRIVATE HELPERS — shared by all temperature-axis boxplot functions
 # =============================================================================
@@ -413,11 +412,13 @@ def _draw_temp_axis_boxplot(
         sort_col = "event_number" if "event_number" in group_df.columns else None
         iter_df = group_df.sort_values(sort_col) if sort_col else group_df
         for _, row in iter_df.iterrows():
-            events_list.append((
-                row.get("event_number", ""),
-                row.get("test_name", ""),
-                ck,
-            ))
+            events_list.append(
+                (
+                    row.get("event_number", ""),
+                    row.get("test_name", ""),
+                    ck,
+                )
+            )
         md_groups.append({"header": header, "events": events_list})
     _write_boxplot_companion_md(output_path, cfg["title_metric"], md_groups)
 
@@ -530,7 +531,6 @@ def _draw_temp_axis_boxplot(
                 output_path.parent
                 / f"{output_path.stem}_{group_label}{source_suffix}{output_path.suffix}"
             )
-            plt.tight_layout()
             save_figure(fig, group_output)
             plt.close(fig)
 
@@ -728,11 +728,13 @@ def plot_emission_etotal_by_metric_boxplot(
         sort_col = "event_number" if "event_number" in group_df.columns else None
         iter_df = group_df.sort_values(sort_col) if sort_col else group_df
         for _, row in iter_df.iterrows():
-            events_list.append((
-                row.get("event_number", ""),
-                row.get("test_name", ""),
-                ck,
-            ))
+            events_list.append(
+                (
+                    row.get("event_number", ""),
+                    row.get("test_name", ""),
+                    ck,
+                )
+            )
         md_groups.append({"header": header, "events": events_list})
     fig_title = f"E_total by {metric_label} ({source} source)"
     md_path = output_path.parent / f"{output_path.stem}_{source}{output_path.suffix}"
@@ -881,7 +883,6 @@ def plot_emission_etotal_by_metric_boxplot(
         metric_output = (
             output_path.parent / f"{output_path.stem}_{group_label}_{source}{output_path.suffix}"
         )
-        plt.tight_layout()
         save_figure(fig, metric_output)
         plt.close(fig)
 
@@ -1009,11 +1010,13 @@ def plot_emission_etotal_by_showerhead_boxplot(
         sort_col = "event_number" if "event_number" in group_df.columns else None
         iter_df = group_df.sort_values(sort_col) if sort_col else group_df
         for _, row in iter_df.iterrows():
-            events_list.append((
-                row.get("event_number", ""),
-                row.get("test_name", ""),
-                row.get("config_key", sh_key),
-            ))
+            events_list.append(
+                (
+                    row.get("event_number", ""),
+                    row.get("test_name", ""),
+                    row.get("config_key", sh_key),
+                )
+            )
         md_groups.append({"header": header, "events": events_list})
     md_path = output_path.parent / f"{output_path.stem}_{source}{output_path.suffix}"
     _write_boxplot_companion_md(
@@ -1175,6 +1178,5 @@ def plot_emission_etotal_by_showerhead_boxplot(
         sh_output = (
             output_path.parent / f"{output_path.stem}_{group_label}_{source}{output_path.suffix}"
         )
-        plt.tight_layout()
         save_figure(fig, sh_output)
         plt.close(fig)

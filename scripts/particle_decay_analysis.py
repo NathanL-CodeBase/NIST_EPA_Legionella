@@ -24,7 +24,7 @@ series, and control volume, per the report's Table 7 / Equation 10:
         Brackets E(t)1 against the entry-zone CO2 air-change-rate estimate.
     E(t)3 (bin{n}_adjusted_*): lambda_outside, ratio-corrected concentration
         series, 36.1086 m3. Pre-cutover (single-monitor) events only.
-    E(t)4 (bin{n}_bathroom_*): lambda_outside, primary series, 54.5868 m3
+    E(t)4 (bin{n}_bathroom_*): lambda_outside, primary series, 52.9903 m3
         (bedroom + bathroom). Reuses E(t)1's beta_other (volume-independent).
 
 E(t)1 and E(t)2 (outside/entry) are the values consumed by the ~45 downstream
@@ -114,7 +114,7 @@ Methodology:
            (C_{t+1} - C_t)/dt = p*lambda*C_out,t - lambda*C_t - beta*C_t + E_t/V
            E_t/V = (C_{t+1} - C_t)/dt - p*lambda*C_out,t + lambda*C_t + beta*C_t
            E_t = V*(C_{t+1} - C_t)/dt - p*lambda*V*C_out,t + lambda*V*C_t + beta*V*C_t
-       - V is 36.1086 m3 for E1/E2/E3, 54.5868 m3 for E4
+       - V is 36.1086 m3 for E1/E2/E3, 52.9903 m3 for E4
        - Report E_mean and E_std from positive E_t values over the window
        - E_times and E_per_step (all steps including negative) stored for plotting
 
@@ -213,7 +213,7 @@ Update log:
         primary concentration series (E1/E2/E4) changed from the ratio-corrected
         series to the raw C_bed1(t)/fleet C_room(t) series -- the ratio-corrected
         series is now used for E3 only, per the report's Table 7. BEDROOM_VOLUME_M3
-        precision updated to 36.1086 m3; BEDROOM_BATHROOM_VOLUME_M3 (54.5868 m3)
+        precision updated to 36.1086 m3; BEDROOM_BATHROOM_VOLUME_M3 (52.9903 m3)
         added for E4.
 """
 
@@ -513,8 +513,7 @@ def run_particle_analysis(
         skipped_bins = []
         for bin_num in PARTICLE_BINS.keys():
             source_e_means = [
-                result.get(f"bin{bin_num}_{source}_E_mean", np.nan)
-                for source in _LAMBDA_SOURCES
+                result.get(f"bin{bin_num}_{source}_E_mean", np.nan) for source in _LAMBDA_SOURCES
             ]
             if any(not np.isnan(v) for v in source_e_means):
                 valid_bins += 1
@@ -592,7 +591,9 @@ def _print_overall_summary(results_df: pd.DataFrame, results: list) -> None:
     for bin_num, bin_info in PARTICLE_BINS.items():
         bin_name = bin_info["name"]
         p_col = f"bin{bin_num}_p_mean"
-        valid_p = results_df[p_col].dropna() if p_col in results_df.columns else pd.Series(dtype=float)
+        valid_p = (
+            results_df[p_col].dropna() if p_col in results_df.columns else pd.Series(dtype=float)
+        )
 
         print(f"\nBin {bin_num} ({bin_name} um):")
         if len(valid_p) > 0:
@@ -606,9 +607,7 @@ def _print_overall_summary(results_df: pd.DataFrame, results: list) -> None:
             valid_beta = results_df[beta_col].dropna()
             valid_E = results_df[E_col].dropna()
             if len(valid_beta) > 0:
-                print(
-                    f"  beta ({source}): {valid_beta.mean():.3f} +/- {valid_beta.std():.3f} h^-1"
-                )
+                print(f"  beta ({source}): {valid_beta.mean():.3f} +/- {valid_beta.std():.3f} h^-1")
             if len(valid_E) > 0:
                 print(f"  E ({source}): {valid_E.mean():.2e} +/- {valid_E.std():.2e} #/min")
             print(f"  Valid events ({source}): {len(valid_E)}/{len(results)}")
