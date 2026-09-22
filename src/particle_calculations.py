@@ -17,8 +17,9 @@ Key Functions:
     - find_peak_time: Locate the indoor concentration peak within the 0-2 h
       post-shower-off window; lambda-independent, shared by every source
     - calculate_other_process_rate: Estimate beta (deposition + other losses)
-      numerically over the fixed 1-2 h post-shower-off window using R²-based
-      4-step selection. Called once per lambda source (outside, entry).
+      numerically over the fixed 1-2 h post-shower-off window using an
+      R²-based single-step selection. Called once per lambda source
+      (outside, entry).
     - calculate_emission_rate: Estimate E (#/min) from the shower-on-to-peak
       mass balance; reports mean, std, median, and trapezoidal E_total. Called
       once per lambda source, sharing the one find_peak_time result.
@@ -31,9 +32,9 @@ Processing Features:
       independently via PARTICLE_BINS configuration
     - All rate parameters (lambda, beta) use consistent h⁻¹ units; conversions
       to min⁻¹ applied internally where needed
-    - R²-based 4-step beta selection (threshold 0.80): (a) unclamped trimmed
-      mean; (b) clamp ≥ 0; (c) set beta = 0; (d) if still R² < 0.80 return
-      beta = NaN (bin invalid — no Ct prediction plotted)
+    - R²-based single-step beta selection (threshold 0.75): unclamped trimmed
+      mean, kept if R² ≥ 0.75; otherwise beta = NaN (bin invalid — no Ct
+      prediction plotted)
     - Penetration windows span ~6 h each and are time-of-day-aware to capture
       stable indoor/outdoor ratios without shower-influenced periods
     - Emission R² computed separately for the forward Euler emission-phase fit
@@ -55,10 +56,9 @@ Methodology:
         so negative values from noise or rising-concentration steps are
         included to avoid upward bias).  A 5th-95th percentile trim then
         removes extreme outliers on both sides symmetrically.  Beta is then
-        selected via an R²-based four-step procedure (threshold 0.80):
-        (a) try unclamped trimmed mean; (b) if R² < 0.80 clamp to ≥ 0;
-        (c) if still R² < 0.80 set beta = 0; (d) if beta=0 also R² < 0.80,
-        return beta=NaN (bin invalid — no Ct prediction plotted).
+        selected via an R²-based single-step procedure (threshold 0.75): the
+        unclamped trimmed mean is kept if R² ≥ 0.75; otherwise beta = NaN
+        (bin invalid — no Ct prediction plotted).
 
     Step 4 - Emission rate (E):
         Using the shower-on-to-peak window:
@@ -95,6 +95,11 @@ Update log:
         src/particle_emission_variants.py). BEDROOM_VOLUME_M3 precision
         updated to the CAD value 36.1086 m³ (was 36.1); BEDROOM_BATHROOM_VOLUME_M3
         (52.9903 m³) added.
+    2026-09-22  calculate_other_process_rate: simplified beta selection from
+        the R²-based four-step procedure (unclamped -> clamped >=0 -> 0 ->
+        invalid; threshold 0.80) to a single step: unclamped trimmed mean,
+        kept if R² >= 0.75, else beta = NaN. Removed the clamp-to->=0 and
+        forced-beta=0 fallback steps.
 """
 
 from datetime import datetime, timedelta
@@ -460,21 +465,16 @@ def calculate_other_process_rate(
           and indicate measurement noise spikes.
         - 5th–95th percentile trim on the retained estimates to remove
           symmetric extreme outliers without introducing directional bias.
-        - R²-based multi-step beta selection (threshold = 0.80):
-          Step (a): simulate forward with unclamped trimmed-mean beta (may be
-          negative).  If R² ≥ 0.80, accept this beta (negative values represent
-          net particle growth — coagulation / condensation > settling).
-          Step (b): if R² < 0.80, clamp beta to max(beta_mean, 0) and re-run
-          the simulation.  If R² ≥ 0.80, accept the non-negative beta.
-          Step (c): if still R² < 0.80, set beta = 0 and re-run.  If R² ≥ 0.80,
-          accept beta = 0 (no net deposition beyond ventilation).
-          Step (d): if beta = 0 still yields R² < 0.80, the bin is invalid —
-          return beta = NaN.  Downstream code skips Ct prediction and emission
-          calculation for this bin, and omits its predicted curve from figures.
-          This prevents the forward-Euler simulation from producing a spurious
-          upward trend (the simulation would otherwise converge to the
-          beta=0 steady state p·C_out even as measured concentrations continue
-          to fall, producing a visible "step-change").
+        - R²-based single-step beta selection (threshold = 0.75):
+          Simulate forward with the unclamped trimmed-mean beta (may be
+          negative — negative values represent net particle growth,
+          coagulation / condensation > settling).  If R² ≥ 0.75, accept this
+          beta.  Otherwise the bin is invalid — return beta = NaN.  Downstream
+          code skips Ct prediction and emission calculation for this bin, and
+          omits its predicted curve from figures.  No clamping or forced
+          beta = 0 fallback is attempted: a bin either fits well at the raw
+          trimmed-mean beta, or it is marked invalid rather than forcing a
+          beta value that does not actually describe the decay.
         - c_t <= 0 steps skipped (division by c_t unstable).
 
     Parameters:
@@ -487,14 +487,12 @@ def calculate_other_process_rate(
             entry-source, per the caller; this function only ever sees one
             scalar and is called once per source
     Returns:
-        Dict: Dictionary with beta (R²-selected value; may be negative if
-              step (a) succeeds, 0 if step (c) is reached, or NaN if step (d)
-              is reached — meaning the bin is invalid and no Ct prediction
-              should be plotted), beta_raw_mean (unclamped trimmed mean),
-              beta_std, beta_r_squared, beta_step ("a"/"b"/"c"/"d" indicating
-              which selection step was accepted; NaN on early failure),
-              n_points, and c_steady_state; or NaN values + skip_reason on
-              failure
+        Dict: Dictionary with beta (unclamped trimmed mean if R² ≥ 0.75, may
+              be negative; NaN if R² < 0.75 — meaning the bin is invalid and
+              no Ct prediction should be plotted), beta_raw_mean (unclamped
+              trimmed mean), beta_std, beta_r_squared, beta_step ("a" if
+              accepted, NaN if the bin is invalid), n_points, and
+              c_steady_state; or NaN values + skip_reason on failure
     """
     bin_info = PARTICLE_BINS[bin_num]
     col_inside = f"{bin_info['column']}_inside"
@@ -605,40 +603,23 @@ def calculate_other_process_rate(
         ss_tot = float(np.sum((c_inside_valid - np.mean(c_inside_valid)) ** 2))
         return 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
 
-    # R²-based multi-step beta selection (threshold = 0.80).
-    # Step (a): unclamped trimmed-mean beta (may be negative → particle growth)
-    # Step (b): clamp to non-negative
-    # Step (c): force beta = 0
-    # Step (d): beta = 0 still fails → bin is invalid (beta returned as NaN)
-    # beta_step records which step was accepted ("a"/"b"/"c"/"d") for traceability.
-    R2_THRESHOLD = 0.80
+    # R²-based single-step beta selection (threshold = 0.75).
+    # Unclamped trimmed-mean beta (may be negative → particle growth) is kept
+    # if R² >= 0.75; otherwise the bin is invalid (beta returned as NaN).
+    # beta_step records whether the beta was accepted ("a") for traceability.
+    R2_THRESHOLD = 0.75
     r2_a = _r2_for_beta(beta_mean)
     if not np.isnan(r2_a) and r2_a >= R2_THRESHOLD:
         beta_val = beta_mean
         r_squared = r2_a
         beta_step = "a"
     else:
-        # Step (b): clamp to non-negative; many events where indoor ≈ outdoor
-        beta_nonneg = max(beta_mean, 0.0)
-        r2_b = _r2_for_beta(beta_nonneg)
-        if not np.isnan(r2_b) and r2_b >= R2_THRESHOLD:
-            beta_val = beta_nonneg
-            r_squared = r2_b
-            beta_step = "b"
-        else:
-            # Step (c): noise-dominated; try beta = 0
-            r2_c = _r2_for_beta(0.0)
-            if not np.isnan(r2_c) and r2_c >= R2_THRESHOLD:
-                beta_val = 0.0
-                r_squared = r2_c
-                beta_step = "c"
-            else:
-                # Step (d): beta = 0 also fails; bin is invalid — return NaN so
-                # downstream code skips Ct prediction and omits the predicted curve.
-                # beta_r_squared is still recorded (R² for beta=0) for diagnostics.
-                beta_val = np.nan
-                r_squared = r2_c if not np.isnan(r2_c) else _r2_for_beta(0.0)
-                beta_step = "d"
+        # Bin is invalid — return NaN so downstream code skips Ct prediction
+        # and omits the predicted curve. beta_r_squared is still recorded for
+        # diagnostics (R² of the unclamped trimmed-mean beta that failed).
+        beta_val = np.nan
+        r_squared = r2_a
+        beta_step = np.nan
 
     # Steady-state concentration (using mean outdoor concentration)
     total_loss = lambda_ach + beta_val

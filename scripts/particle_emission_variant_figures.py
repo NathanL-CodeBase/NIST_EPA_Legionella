@@ -17,8 +17,9 @@ does not recompute p, beta, or E. Run particle_decay_analysis.py first.
                            concentration series (pre-cutover events only,
                            since E(t)3 is NaN after the room-correction cutover)
        outside_bathroom   E(t)4 vs. E(t)1 -- bedroom+bathroom vs. bedroom-only
-                           control volume (beta_other is identical for this
-                           pair since it has no volume term -- see
+                           control volume (E figure only -- beta_other has no
+                           volume term, so its value is identical to the
+                           entry_outside pair's outside beta_other; see
                            src/particle_calculations.calculate_other_process_rate)
    A vertical line at 2026-06-03 marks the room-concentration correction
    cutover (src/particle_room_correction.py): before that date the primary
@@ -44,8 +45,10 @@ Output Files:
     output/plots/particle/emission_entry_outside_bin{N}.html       (12 figures)
     output/plots/particle/beta_other_outside_adjusted_bin{N}.html  (12 figures)
     output/plots/particle/emission_outside_adjusted_bin{N}.html    (12 figures)
-    output/plots/particle/beta_other_outside_bathroom_bin{N}.html  (12 figures)
     output/plots/particle/emission_outside_bathroom_bin{N}.html    (12 figures)
+    (5 figures per bin: 2 beta_other + 3 emission; beta_other_outside_bathroom
+    is dropped since beta_other has no volume term -- see COMPARISON_PAIRS
+    above)
     output/plots/penetration_summary.png, deposition_summary_{outside,entry}.png,
         emission_summary_{outside,entry}.png
     output/plots/emission_etotal_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png,
@@ -69,6 +72,10 @@ Update log:
         boxplots, and the 5 condition-comparison families), which now reads
         all_results from this script's already-loaded DataFrame instead of
         an in-memory results_df from the pipeline script.
+    2026-09-22  Dropped the beta_other_outside_bathroom figure (redundant --
+        beta_other has no volume term, so it matches the entry_outside
+        pair's outside beta_other). Per-bin output is now 5 figures (2 beta
+        + 3 E) instead of 6.
 """
 
 import re
@@ -114,6 +121,12 @@ COMPARISON_PAIRS = [
     ("outside", "adjusted", "outside_adjusted"),
     ("outside", "bathroom", "outside_bathroom"),
 ]
+
+# (pair_stem, metric_key) combinations to skip. beta_other has no volume term
+# (see src.particle_calculations.calculate_other_process_rate), so the
+# outside_bathroom beta_other figure would be identical to outside's own
+# beta_other values in the entry_outside pair -- redundant, so it is dropped.
+SKIP_FIGURES = {("outside_bathroom", "beta")}
 
 VARIANT_LEGEND = {
     "outside": "Outside (E1)",
@@ -817,6 +830,8 @@ def main() -> None:
     for bin_index in PARTICLE_BINS:
         for metric_key in METRICS:
             for variant_a, variant_b, pair_stem in COMPARISON_PAIRS:
+                if (pair_stem, metric_key) in SKIP_FIGURES:
+                    continue
                 spec = METRICS[metric_key]
                 output_path = figure_dir / spec["filename"].format(pair=pair_stem, bin=bin_index)
                 make_figure(df, bin_index, metric_key, variant_a, variant_b, pair_stem, output_path)

@@ -100,11 +100,9 @@ Methodology:
        - Collect all estimates <= MAX_OTHER_PROCESS_RATE (no lower bound to
          avoid upward bias from excluding negative/noisy steps)
        - Apply 5th-95th percentile trim to remove extreme outliers symmetrically
-       - Beta selected via R²-based four-step procedure (threshold 0.80):
-         (a) unclamped trimmed mean → keep if R² ≥ 0.80;
-         (b) clamp to ≥ 0 → keep if R² ≥ 0.80;
-         (c) set beta = 0 → keep if R² ≥ 0.80;
-         (d) beta = 0 also fails → beta = NaN (bin invalid, no Ct prediction)
+       - Beta selected via R²-based single-step procedure (threshold 0.75):
+         unclamped trimmed mean → keep if R² ≥ 0.75; otherwise beta = NaN
+         (bin invalid, no Ct prediction)
        - Report selected beta as mean beta for the event/bin
        - Has no volume term: E4's beta_other equals E1's
 
@@ -215,6 +213,11 @@ Update log:
         series is now used for E3 only, per the report's Table 7. BEDROOM_VOLUME_M3
         precision updated to 36.1086 m3; BEDROOM_BATHROOM_VOLUME_M3 (52.9903 m3)
         added for E4.
+    2026-09-22  Simplified beta selection (src/particle_calculations.py) from
+        the R²-based four-step procedure (unclamped -> clamped >=0 -> 0 ->
+        invalid; threshold 0.80) to a single step: unclamped trimmed mean,
+        kept if R² >= 0.75, else beta = NaN (bin invalid). No clamping or
+        forced beta=0 fallback.
 """
 
 import sys
@@ -327,7 +330,7 @@ def run_particle_analysis(
     print(f"Time step: {TIME_STEP_MINUTES} minute(s)")
     print("Penetration factor: averaged before/after windows (p capped at 1)")
     print(f"Deposition window: {DEPOSITION_WINDOW_HOURS} hour(s) after shower")
-    print("Beta selection: R²-based 4-step (unclamped → clamped ≥ 0 → 0 → invalid; threshold 0.80)")
+    print("Beta selection: R²-based single-step (unclamped trimmed mean → invalid; threshold 0.75)")
     print("\nValidation thresholds:")
     print(f"  Max other process rate (beta_other): {MAX_OTHER_PROCESS_RATE} h^-1")
     print(
@@ -644,8 +647,9 @@ def _save_results(results_df: pd.DataFrame, output_dir: Path) -> None:
         p_penetration     - Penetration factors (outside/entry primary series
                             only)
         beta_deposition   - Other process rates (h⁻¹) per source: beta_other
-                            (clamped >= 0) and beta_other_raw_mean (unclamped
-                            trimmed mean) per bin
+                            (R²-selected, NaN if invalid) and
+                            beta_other_raw_mean (unclamped trimmed mean,
+                            identical to beta_other when valid) per bin
         beta_r_squared    - R² of forward Euler decay simulation, per source
         E_emission        - Mean emission rates (#/min), per source
         E_total_particles - Total emitted particle counts per bin (E_total, #),
