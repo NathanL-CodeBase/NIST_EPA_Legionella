@@ -261,13 +261,14 @@ def plot_particle_decay_event(
                 label="Outdoor Concentration",
             )
 
-    # Add shaded window for deposition analysis period
+    # Add shaded window for deposition analysis period (last 1 hr of the
+    # deposition window, i.e. 1 hr after shower off to deposition_end)
     add_shaded_window(
         ax1,
-        event["shower_off"],
+        event["deposition_end"] - timedelta(hours=1),
         event["deposition_end"],
         color=COLORS["post_shower"],
-        label="Deposition window (2 hr)",
+        label="Deposition window (1 hr)",
         alpha=WINDOW_ALPHA,
     )
 
@@ -449,7 +450,7 @@ def plot_particle_decay_event(
         add_shower_off_marker(ax, event["shower_off"])
 
         ax.axhline(0, color="gray", linewidth=0.8, linestyle=":", alpha=0.6)
-        ax.set_ylabel(f"E (#/cm³·min)\n{panel_label}", fontsize=FONT_SIZE_LABEL - 1)
+        ax.set_ylabel(f"E (#/min)\n{panel_label}", fontsize=FONT_SIZE_LABEL - 1)
         ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0), useMathText=False)
         ax.grid(True, alpha=0.3)
         ax.tick_params(labelsize=FONT_SIZE_TICK)
