@@ -27,6 +27,7 @@ Re-exported from plot_particle_boxplots:
     - plot_penetration_factor_boxplot
     - plot_emission_etotal_by_metric_boxplot
     - plot_emission_etotal_by_showerhead_boxplot
+    - plot_inhaled_dose_boxplot
 
 Re-exported from plot_comparison:
     - plot_spray_pattern_comparison_boxplots
@@ -868,6 +869,7 @@ from src.plot_particle_boxplots import (  # noqa: E402
     plot_emission_etotal_by_metric_boxplot,
     plot_emission_etotal_by_showerhead_boxplot,
     plot_emission_rate_boxplot,
+    plot_inhaled_dose_boxplot,
     plot_penetration_factor_boxplot,
 )
 from src.plot_comparison import (  # noqa: E402
@@ -892,6 +894,7 @@ __all__ = [
     "plot_penetration_factor_boxplot",
     "plot_emission_etotal_by_metric_boxplot",
     "plot_emission_etotal_by_showerhead_boxplot",
+    "plot_inhaled_dose_boxplot",
     # Condition-comparison boxplots (re-exported from plot_comparison)
     "plot_spray_pattern_comparison_boxplots",
     "plot_shower_head_comparison_boxplots",
