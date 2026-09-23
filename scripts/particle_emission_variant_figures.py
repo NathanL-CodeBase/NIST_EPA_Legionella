@@ -85,7 +85,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from bokeh.layouts import column as bokeh_column
-from bokeh.models import ColumnDataSource, DatetimeTickFormatter, Div, HoverTool, Label, Span, Whisker
+from bokeh.models import (
+    ColumnDataSource,
+    DatetimeTickFormatter,
+    Div,
+    HoverTool,
+    Label,
+    Span,
+    Whisker,
+)
 from bokeh.plotting import figure, output_file, save
 from scipy.stats import ttest_rel
 
@@ -96,7 +104,12 @@ import src.sig_figs as sf  # noqa: E402
 from src.data_paths import get_data_root  # noqa: E402
 from src.particle_calculations import PARTICLE_BINS  # noqa: E402
 from src.particle_room_correction import ROOM_CUTOVER  # noqa: E402
-from src.plot_style import MODUAIR_FIGURE_WIDTH, MODUAIR_TEXT_PT, SENSOR_COLORS, style_moduair_figure  # noqa: E402
+from src.plot_style import (  # noqa: E402
+    MODUAIR_FIGURE_WIDTH,
+    MODUAIR_TEXT_PT,
+    SENSOR_COLORS,
+    style_moduair_figure,
+)
 
 # =============================================================================
 # Configuration: Per-Bin Variant Comparison Figures
@@ -138,7 +151,7 @@ VARIANT_COLORS = {
     "entry": SENSOR_COLORS[0],
     "outside": SENSOR_COLORS[1],
     "adjusted": SENSOR_COLORS[2],
-    "bathroom": SENSOR_COLORS[3],
+    "bathroom": SENSOR_COLORS[4],
 }
 
 # One metric spec per figure kind: value/std/r2 column templates ({bin} and
@@ -382,7 +395,8 @@ def make_figure(
     bin_name = PARTICLE_BINS[bin_index]["name"]
 
     output_file(
-        str(output_path), title=f"{metric_key} {VARIANT_LEGEND[variant_a]} vs {VARIANT_LEGEND[variant_b]}, bin {bin_index}"
+        str(output_path),
+        title=f"{metric_key} {VARIANT_LEGEND[variant_a]} vs {VARIANT_LEGEND[variant_b]}, bin {bin_index}",
     )
 
     fig = figure(
@@ -420,8 +434,16 @@ def make_figure(
             continue
 
         mean_vals = sub[value_col].astype(float)
-        std_vals = sub[std_col].astype(float).fillna(0.0) if std_col in sub.columns else pd.Series(0.0, index=sub.index)
-        r2_vals = sub[r2_col].astype(float) if r2_col in sub.columns else pd.Series(np.nan, index=sub.index)
+        std_vals = (
+            sub[std_col].astype(float).fillna(0.0)
+            if std_col in sub.columns
+            else pd.Series(0.0, index=sub.index)
+        )
+        r2_vals = (
+            sub[r2_col].astype(float)
+            if r2_col in sub.columns
+            else pd.Series(np.nan, index=sub.index)
+        )
         color = VARIANT_COLORS[variant]
 
         source_data = ColumnDataSource(
@@ -482,10 +504,14 @@ def make_figure(
         text_color=CUTOVER_LABEL_COLOR,
     )
     fig.add_layout(
-        Label(x=ROOM_CUTOVER, x_offset=-10, text=CUTOVER_LABELS[0], text_align="right", **label_kwargs)
+        Label(
+            x=ROOM_CUTOVER, x_offset=-10, text=CUTOVER_LABELS[0], text_align="right", **label_kwargs
+        )
     )
     fig.add_layout(
-        Label(x=ROOM_CUTOVER, x_offset=10, text=CUTOVER_LABELS[1], text_align="left", **label_kwargs)
+        Label(
+            x=ROOM_CUTOVER, x_offset=10, text=CUTOVER_LABELS[1], text_align="left", **label_kwargs
+        )
     )
 
     col_a = cols_by_variant.get(variant_a)
@@ -519,9 +545,7 @@ def generate_summary_plots(results_df: pd.DataFrame, output_dir: Path) -> None:
     results_df = _strip_unit_suffixes(results_df)
 
     if "flow_rate" in results_df.columns and results_df["flow_rate"].notna().any():
-        plot_df = results_df[
-            results_df["flow_rate"].between(FLOW_RATE_MIN, FLOW_RATE_MAX)
-        ].copy()
+        plot_df = results_df[results_df["flow_rate"].between(FLOW_RATE_MIN, FLOW_RATE_MAX)].copy()
     else:
         plot_df = results_df.copy()
 
