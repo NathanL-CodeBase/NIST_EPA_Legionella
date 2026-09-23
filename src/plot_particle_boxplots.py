@@ -13,7 +13,6 @@ Functions:
     - plot_deposition_rate_boxplot: beta_raw_mean box-and-whisker by water temperature
     - plot_emission_rate_boxplot: E_mean box-and-whisker by water temperature
     - plot_penetration_factor_boxplot: p_mean box-and-whisker by water temperature
-    - plot_inhaled_dose_boxplot: cumulative inhaled dose box-and-whisker by water temperature
     - plot_emission_etotal_by_metric_boxplot: E_total vs. continuous metric axis
     - plot_emission_etotal_by_showerhead_boxplot: E_total grouped by shower head type
 
@@ -285,15 +284,6 @@ _TEMP_BOXPLOT_CONFIG = {
         title_metric="Particle Penetration Factor",
         title_note="(Box = median/IQR, whiskers = 1.5×IQR; p capped at 1)",
         hline=1.0,
-        has_source=False,
-    ),
-    "inhaled_dose": dict(
-        col_template="bin{n}_inhaled_dose",
-        ylabel="Cumulative Inhaled Dose (#)",
-        title_metric="Cumulative Inhaled Particle Dose",
-        title_note="(Box = median/IQR, whiskers = 1.5×IQR; dose = sum of "
-        "max(C-baseline, 0) x V_breath, shower-on to +2h10m)",
-        hline=None,
         has_source=False,
     ),
 }
@@ -644,32 +634,6 @@ def plot_penetration_factor_boxplot(
         particle_bins,
         output_path,
         _TEMP_BOXPLOT_CONFIG["penetration_factor"],
-        rh_data,
-        x_range,
-    )
-
-
-def plot_inhaled_dose_boxplot(
-    results_df: pd.DataFrame,
-    particle_bins: Dict,
-    output_path: Path,
-    rh_data: "Optional[pd.DataFrame]" = None,
-    x_range: "Optional[tuple]" = None,
-) -> None:
-    """Three box-and-whisker figures of cumulative inhaled dose by water temperature.
-
-    Parameters:
-        results_df: DataFrame with results (must contain config_key and bin{n}_inhaled_dose).
-        particle_bins: Dictionary of particle bin information.
-        output_path: Base path; ``_bin0-2`` / ``_bin3-6`` / ``_bin7-11`` suffixes are appended.
-        rh_data: Optional DataFrame with 'datetime' and 'RH_bedroom' for RH annotation.
-        x_range: Optional (xmin, xmax, xtick_step) in °C to override the default 5–60 °C axis.
-    """
-    _draw_temp_axis_boxplot(
-        results_df,
-        particle_bins,
-        output_path,
-        _TEMP_BOXPLOT_CONFIG["inhaled_dose"],
         rh_data,
         x_range,
     )

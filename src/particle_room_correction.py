@@ -57,6 +57,9 @@ Key Functions:
       E(t)3. Both consumed by
       src.particle_data_loader.load_and_merge_quantaq_data via its
       inside_builder parameter.
+    - build_croom_data: Build the standalone C_room(t) fleet-average series
+      (fleet window only, not blended with the raw sensor), used by
+      scripts/particle_inhalation_dose_analysis.py.
 
 Input Files:
     - QuantAQ MOD-PM-00195 processed CSVs (via
@@ -77,6 +80,9 @@ Update log:
         pre-cutover ratio correction) so E(t)1/E(t)2/E(t)4 can use the raw
         C_bed1(t)/C_room(t) series instead of the ratio-corrected one, per
         the four-variant emission-rate table (src/particle_emission_variants.py).
+    2026-09-23  Added build_croom_data (standalone fleet-only C_room(t),
+        not blended with the raw sensor) for
+        scripts/particle_inhalation_dose_analysis.py.
 """
 
 from typing import Dict, List, Optional
@@ -325,6 +331,58 @@ def build_corrected_inside_data(events: List[Dict]) -> pd.DataFrame:
         Columns datetime, opc_bin0..opc_bin11.
     """
     return _build_inside_data(events, apply_pre_cutover_ratio=True)
+
+
+def build_croom_data() -> pd.DataFrame:
+    """
+    Build the standalone C_room(t) position-weighted MODULAIR-PM fleet average.
+
+    Unlike build_raw_inside_data/build_corrected_inside_data, this does not
+    blend with the raw MOD-PM-00195 reading outside the fleet window -- it
+    returns only the fleet-period series (ROOM_CUTOVER to FLEET_END), with NaN
+    wherever MIN_QUANTS or fewer fleet sensors report. Used by
+    scripts/particle_inhalation_dose_analysis.py to compute inhaled dose from
+    C_room as its own series, separate from (not substituted into) the raw
+    QuantAQ-inside series.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns datetime, opc_bin0..opc_bin11, 1-minute resolution, spanning
+        ROOM_CUTOVER to FLEET_END.
+    """
+    from scripts.moduair_cave_ratio import (
+        FLEET_SNS,
+        MIN_QUANTS,
+        TARGET_SN,
+        build_position_totals,
+        compute_room_frame,
+    )
+    from src.moduair_loader import list_available_sensors, load_fleet_bins
+
+    bin_cols = [f"opc_bin{n}" for n in PARTICLE_BINS]
+    fleet_index = pd.date_range(ROOM_CUTOVER, FLEET_END, freq="1min", name="datetime")
+    fleet_frame = pd.DataFrame(index=fleet_index, columns=bin_cols, dtype=float)
+
+    print("\nBuilding standalone C_room(t) fleet-average concentration...")
+    available = set(list_available_sensors("raw"))
+    wanted = [sn for sn in (FLEET_SNS + [TARGET_SN]) if sn in available]
+    fleet = load_fleet_bins(wanted, start=ROOM_CUTOVER, end=FLEET_END)
+    if TARGET_SN not in fleet:
+        print("  [WARN] MODULAIR-PM fleet data unavailable; C_room left all-NaN.")
+        return fleet_frame.reset_index()
+
+    totals = build_position_totals(fleet)
+    for bin_num in PARTICLE_BINS:
+        bin_col = f"opc_bin{bin_num}"
+        cave = compute_room_frame(totals, bin_col)
+        if cave.empty:
+            print(f"  [WARN] Bin {bin_num}: no fleet data; C_room left NaN.")
+            continue
+        c_room = cave["C_room"].where(cave["n_sensors"] > MIN_QUANTS)
+        fleet_frame[bin_col] = c_room.reindex(fleet_index)
+
+    return fleet_frame.reset_index()
 
 
 def build_raw_inside_data(events: List[Dict]) -> pd.DataFrame:

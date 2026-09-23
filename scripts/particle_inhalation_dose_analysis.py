@@ -11,33 +11,38 @@ exposure metric, independent of the penetration/deposition/emission-rate
 pipeline in scripts/particle_decay_analysis.py -- it needs only the indoor
 particle concentration series and the event registry.
 
-Concentration source: the primary "inside" series from
-src.particle_data_loader.load_and_merge_quantaq_data (default
-inside_builder=build_raw_inside_data) -- raw QuantAQ-inside (MOD-PM-00195)
-for all events, except 2026-06-03 through 2026-07-16 where it is the
-position-weighted MODULAIR-PM fleet average C_room(t) (see
-src/particle_room_correction.py). Requires the unified event registry
-(scripts/event_registry.py); duration-excluded and otherwise-excluded events
-are skipped, matching scripts/particle_decay_analysis.py's convention.
+Two concentration sources are computed and reported side by side (not
+blended into one series):
+    - QuantAQ-inside: raw MOD-PM-00195 reading, for every event.
+    - C_room: the position-weighted MODULAIR-PM fleet average (see
+      src.particle_room_correction.build_croom_data), which only exists
+      2026-06-03 through 2026-07-16 -- events outside that window get NaN.
+Requires the unified event registry (scripts/event_registry.py);
+duration-excluded and otherwise-excluded events are skipped, matching
+scripts/particle_decay_analysis.py's convention.
 
 Output Files:
-    output/inhaled_dose_summary.xlsx (sheet: inhaled_dose_by_bin) -- per-event,
-        per-bin cumulative inhaled dose (#) and n_minutes_covered.
+    output/inhaled_dose_summary.xlsx (sheet: inhaled_dose_by_bin) -- per-event
+        cumulative inhaled dose (#), per bin, for both sources
+        (bin{n}_quantaq_inhaled_dose, bin{n}_croom_inhaled_dose) plus
+        n_minutes_covered_quantaq / n_minutes_covered_croom.
     output/plots/particle/inhaled_dose_bin{N}.html (12 figures) -- Bokeh
         time-series: x = shower_on, y = cumulative inhaled dose, one point per
-        event. Style matches scripts/particle_emission_variant_figures.py
+        event per source (QuantAQ-inside vs. C_room). Style matches
+        scripts/particle_emission_variant_figures.py
         (src.plot_style.style_moduair_figure: 1600x800, 12pt, no title,
-        click-to-hide legend, hover enabled), including the ROOM_CUTOVER
-        reference line.
-    output/plots/inhaled_dose_boxplot_{bin0-2,bin3-6,bin7-11}.png (3 figures)
-        -- matplotlib box-and-whisker by water temperature (base W## events
-        only), via src.plot_particle_boxplots.plot_inhaled_dose_boxplot.
+        click-to-hide legend, hover enabled), with a shaded span marking the
+        fleet co-location window where C_room is available.
 
 Author: Nathan Lima
 Institution: National Institute of Standards and Technology (NIST)
 Created: 2026-09-23
 Update log:
-    2026-09-23  Initial version.
+    2026-09-23  Initial version (single blended concentration series, plus
+        water-temperature boxplots).
+    2026-09-23  Replaced the blended series with two independent sources
+        (QuantAQ-inside for all events, C_room for the fleet window only)
+        plotted side by side on each bin figure; removed the boxplots.
 """
 
 import sys
@@ -46,7 +51,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from bokeh.models import ColumnDataSource, DatetimeTickFormatter, HoverTool, Label, Span
+from bokeh.models import BoxAnnotation, ColumnDataSource, DatetimeTickFormatter, HoverTool, Label
 from bokeh.plotting import figure, output_file, save
 
 warnings.filterwarnings("ignore")
@@ -57,11 +62,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import src.sig_figs as sf  # noqa: E402
 from src.data_paths import get_data_root  # noqa: E402
 from src.event_manager import is_event_excluded  # noqa: E402
-from src.inhalation_dose import compute_cumulative_dose  # noqa: E402
+from src.inhalation_dose import compute_cumulative_dose, resample_to_1min  # noqa: E402
 from src.particle_calculations import PARTICLE_BINS  # noqa: E402
-from src.particle_data_loader import get_events_from_registry, load_and_merge_quantaq_data  # noqa: E402
-from src.particle_room_correction import ROOM_CUTOVER  # noqa: E402
-from src.plot_particle_boxplots import plot_inhaled_dose_boxplot  # noqa: E402
+from src.particle_data_loader import get_events_from_registry, load_quantaq_data  # noqa: E402
+from src.particle_room_correction import FLEET_END, ROOM_CUTOVER, build_croom_data  # noqa: E402
 from src.plot_style import MODUAIR_TEXT_PT, SENSOR_COLORS, style_moduair_figure  # noqa: E402
 
 # =============================================================================
@@ -72,10 +76,17 @@ SUMMARY_XLSX_NAME = "inhaled_dose_summary.xlsx"
 SUMMARY_SHEET = "inhaled_dose_by_bin"
 
 FIGURE_SUBDIR = ("plots", "particle")
-BOXPLOT_XRANGE = (5, 55, 5)  # (xmin, xmax, xtick_step) in degrees C
 
-CUTOVER_LABELS = ("Raw C_bed1 / C_adjusted room", "C_room")
-CUTOVER_LABEL_COLOR = "gray"
+# (label, legend text, color) for the two concentration sources plotted on
+# every bin figure.
+SOURCES = [
+    ("quantaq", "QuantAQ-inside (MOD-PM-00195)", SENSOR_COLORS[0]),
+    ("croom", "C_room (fleet average)", SENSOR_COLORS[1]),
+]
+
+FLEET_SPAN_COLOR = "gray"
+FLEET_SPAN_ALPHA = 0.08
+FLEET_SPAN_LABEL = "Fleet co-location period (C_room available)"
 
 
 # =============================================================================
@@ -120,6 +131,45 @@ def _load_valid_events(output_dir: Path) -> list:
 
 
 # =============================================================================
+# Dose Calculation
+# =============================================================================
+
+
+def _compute_dose(events: list) -> pd.DataFrame:
+    """
+    Compute cumulative inhaled dose for both concentration sources and merge
+    them into one per-event table.
+
+    Parameters
+    ----------
+    events : list of dict
+        Valid (non-excluded) event dicts.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per event: event_number, test_name, config_key, water_temp,
+        shower_on, bin{n}_quantaq_inhaled_dose, bin{n}_croom_inhaled_dose,
+        n_minutes_covered_quantaq, n_minutes_covered_croom.
+    """
+    print("\nLoading QuantAQ-inside (raw) concentration...")
+    quantaq_conc = resample_to_1min(load_quantaq_data("inside"))
+    quantaq_dose = compute_cumulative_dose(quantaq_conc, events, label="quantaq")
+
+    print("\nLoading C_room (fleet average) concentration...")
+    croom_conc = resample_to_1min(build_croom_data())
+    croom_dose = compute_cumulative_dose(croom_conc, events, label="croom")
+
+    shared_id_cols = ["test_name", "config_key", "water_temp", "shower_on"]
+    dose_df = quantaq_dose.merge(
+        croom_dose.drop(columns=shared_id_cols),
+        on="event_number",
+        how="left",
+    )
+    return dose_df
+
+
+# =============================================================================
 # Excel Output
 # =============================================================================
 
@@ -131,7 +181,7 @@ def _save_results(dose_df: pd.DataFrame, output_dir: Path) -> None:
     Parameters
     ----------
     dose_df : pd.DataFrame
-        Output of src.inhalation_dose.compute_cumulative_dose.
+        Output of _compute_dose.
     output_dir : Path
         Directory to write inhaled_dose_summary.xlsx into.
     """
@@ -141,7 +191,11 @@ def _save_results(dose_df: pd.DataFrame, output_dir: Path) -> None:
         print(f"\nNo results to save - skipping {output_file_path}")
         return
 
-    column_rename = {f"bin{n}_inhaled_dose": f"bin{n}_inhaled_dose (#)" for n in PARTICLE_BINS}
+    column_rename = {}
+    for n in PARTICLE_BINS:
+        for label, _legend, _color in SOURCES:
+            column_rename[f"bin{n}_{label}_inhaled_dose"] = f"bin{n}_{label}_inhaled_dose (#)"
+
     export_df = dose_df.rename(columns=column_rename)
     export_df = sf.apply_sig_figs_to_df(export_df)
 
@@ -160,20 +214,21 @@ def _make_bin_figure(dose_df: pd.DataFrame, bin_index: int, output_path: Path) -
     """
     Build and save one bin's cumulative-inhaled-dose time-series figure.
 
-    One point per event at its shower_on time. Style matches
-    scripts/particle_emission_variant_figures.py's per-bin figures.
+    Plots both concentration sources (QuantAQ-inside, C_room) as separate
+    point series, one point per event per source at its shower_on time.
+    Style matches scripts/particle_emission_variant_figures.py's per-bin
+    figures.
 
     Parameters
     ----------
     dose_df : pd.DataFrame
-        Output of src.inhalation_dose.compute_cumulative_dose.
+        Output of _compute_dose.
     bin_index : int
         Particle-size bin index (0-11).
     output_path : Path
         Destination HTML path.
     """
     bin_name = PARTICLE_BINS[bin_index]["name"]
-    value_col = f"bin{bin_index}_inhaled_dose"
 
     output_file(str(output_path), title=f"Cumulative inhaled dose, bin {bin_index}")
 
@@ -186,6 +241,7 @@ def _make_bin_figure(dose_df: pd.DataFrame, bin_index: int, output_path: Path) -
 
     hover = HoverTool(
         tooltips=[
+            ("Source", "@source"),
             ("Event", "@event_number"),
             ("Test", "@test_name"),
             ("Config", "@config_key"),
@@ -196,8 +252,35 @@ def _make_bin_figure(dose_df: pd.DataFrame, bin_index: int, output_path: Path) -
     )
     fig.add_tools(hover)
 
-    sub = dose_df[dose_df[value_col].notna()].copy()
-    if not sub.empty:
+    fig.add_layout(
+        BoxAnnotation(
+            left=ROOM_CUTOVER,
+            right=FLEET_END,
+            fill_color=FLEET_SPAN_COLOR,
+            fill_alpha=FLEET_SPAN_ALPHA,
+        )
+    )
+    fig.add_layout(
+        Label(
+            x=ROOM_CUTOVER,
+            y=fig.height - 40,
+            y_units="screen",
+            x_offset=5,
+            text=FLEET_SPAN_LABEL,
+            text_font_size=MODUAIR_TEXT_PT,
+            text_color=FLEET_SPAN_COLOR,
+        )
+    )
+
+    for label, legend_text, color in SOURCES:
+        value_col = f"bin{bin_index}_{label}_inhaled_dose"
+        coverage_col = f"n_minutes_covered_{label}"
+
+        sub = dose_df[dose_df[value_col].notna()].copy()
+        if sub.empty:
+            print(f"    [WARN] Bin {bin_index} ({label}): no valid values.")
+            continue
+
         source_data = ColumnDataSource(
             data={
                 "time": sub["shower_on"],
@@ -205,7 +288,8 @@ def _make_bin_figure(dose_df: pd.DataFrame, bin_index: int, output_path: Path) -
                 "event_number": sub["event_number"],
                 "test_name": sub["test_name"],
                 "config_key": sub["config_key"],
-                "n_minutes_covered": sub["n_minutes_covered"],
+                "n_minutes_covered": sub[coverage_col],
+                "source": [legend_text] * len(sub),
                 "time_str": sub["shower_on"].dt.strftime("%Y-%m-%d %H:%M:%S"),
             }
         )
@@ -215,32 +299,14 @@ def _make_bin_figure(dose_df: pd.DataFrame, bin_index: int, output_path: Path) -
             source=source_data,
             marker="circle",
             size=7,
-            color=SENSOR_COLORS[0],
+            color=color,
             alpha=0.8,
-            legend_label="Cumulative inhaled dose",
+            legend_label=legend_text,
         )
 
-    style_moduair_figure(fig, legend_title="Series", legend_location="top_right")
+    style_moduair_figure(fig, legend_title="Source", legend_location="top_right")
 
     fig.xaxis.formatter = DatetimeTickFormatter(days="%Y-%m-%d", hours="%m-%d %H:%M", minutes="%H:%M")
-
-    fig.add_layout(
-        Span(
-            location=ROOM_CUTOVER,
-            dimension="height",
-            line_color=CUTOVER_LABEL_COLOR,
-            line_dash="dashed",
-            line_width=1.5,
-        )
-    )
-    label_kwargs = dict(
-        y=fig.height - 40,
-        y_units="screen",
-        text_font_size=MODUAIR_TEXT_PT,
-        text_color=CUTOVER_LABEL_COLOR,
-    )
-    fig.add_layout(Label(x=ROOM_CUTOVER, x_offset=-10, text=CUTOVER_LABELS[0], text_align="right", **label_kwargs))
-    fig.add_layout(Label(x=ROOM_CUTOVER, x_offset=10, text=CUTOVER_LABELS[1], text_align="left", **label_kwargs))
 
     save(fig)
 
@@ -268,7 +334,7 @@ def run_inhalation_dose_analysis(
     Returns
     -------
     pd.DataFrame
-        Per-event, per-bin cumulative inhaled dose results.
+        Per-event, per-bin cumulative inhaled dose results for both sources.
     """
     sf.set_enabled(apply_sig_figs)
     print("=" * 80)
@@ -286,10 +352,8 @@ def run_inhalation_dose_analysis(
         print("No valid events found -- nothing to do.")
         return pd.DataFrame()
 
-    particle_data = load_and_merge_quantaq_data(events)
-
     print("\nComputing cumulative inhaled dose...")
-    dose_df = compute_cumulative_dose(particle_data, events)
+    dose_df = _compute_dose(events)
     print(f"  Computed dose for {len(dose_df)} event(s)")
 
     _save_results(dose_df, output_dir)
@@ -302,31 +366,6 @@ def run_inhalation_dose_analysis(
         output_path = figure_dir / f"inhaled_dose_bin{bin_index}.html"
         _make_bin_figure(dose_df, bin_index, output_path)
         print(f"  Saved {output_path.name}")
-
-    print("\nBuilding water-temperature boxplots...")
-    rh_data = None
-    try:
-        from src.data_paths import get_common_file
-
-        bc = pd.read_excel(get_common_file("rh_temp_wind_summary"), sheet_name="Bedroom_Conditions")
-        bc = bc.rename(columns={"shower_on": "datetime", "rh_mean (%)": "RH_bedroom"})
-        rh_data = bc[["datetime", "RH_bedroom"]].copy()
-        rh_data["datetime"] = pd.to_datetime(rh_data["datetime"])
-        print("  Loaded Bedroom_Conditions RH for boxplot annotations.")
-    except Exception as rh_err:
-        print(f"  Note: Could not load Bedroom_Conditions RH data (n= only annotations): {rh_err}")
-
-    try:
-        plot_inhaled_dose_boxplot(
-            dose_df,
-            PARTICLE_BINS,
-            output_dir / "plots" / "inhaled_dose_boxplot.png",
-            rh_data=rh_data,
-            x_range=BOXPLOT_XRANGE,
-        )
-        print("  Generated: inhaled_dose_boxplot_{bin0-2,bin3-6,bin7-11}.png")
-    except Exception as e:
-        print(f"  Error generating inhaled_dose_boxplot: {e}")
 
     print("\n" + "=" * 80)
     print("Done")
