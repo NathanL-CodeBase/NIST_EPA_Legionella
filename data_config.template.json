@@ -295,6 +295,13 @@
       "description": "Particle decay and emission analysis results",
       "sheets": ["all_results", "p_penetration", "beta_deposition", "E_emission"],
       "analysis_script": "scripts/particle_decay_analysis.py"
+    },
+    "inhaled_dose_summary": {
+      "filename": "inhaled_dose_summary.xlsx",
+      "path": "output",
+      "description": "Cumulative inhaled particle dose per event, per bin",
+      "sheets": ["inhaled_dose_by_bin"],
+      "analysis_script": "scripts/particle_inhalation_dose_analysis.py"
     }
   },
 
