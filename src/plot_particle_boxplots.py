@@ -59,6 +59,39 @@ from src.plot_style import (
     save_figure,
 )
 
+def _filter_by_start_date(results_df: pd.DataFrame, start_date: Optional[str]) -> pd.DataFrame:
+    """Filter results_df to events with shower_on >= start_date.
+
+    Parameters
+    ----------
+    results_df : pd.DataFrame
+        DataFrame with analysis results.
+    start_date : str or datetime or None
+        Inclusive start date. Accepts any pandas.to_datetime parseable string.
+        If None, returns results_df unchanged.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered copy of results_df.
+    """
+    if start_date is None:
+        return results_df
+    if "shower_on" not in results_df.columns:
+        # No date column to filter on; return unchanged
+        return results_df
+    try:
+        start_ts = pd.to_datetime(start_date)
+    except Exception as exc:
+        raise ValueError(f"Unable to parse start_date {start_date!r}: {exc}") from exc
+    # Ensure shower_on is datetime
+    if not pd.api.types.is_datetime64_any_dtype(results_df["shower_on"]):
+        results_df = results_df.copy()
+        results_df["shower_on"] = pd.to_datetime(results_df["shower_on"], errors="coerce")
+    filtered = results_df[results_df["shower_on"] >= start_ts].copy()
+    return filtered
+
+
 # =============================================================================
 # PRIVATE HELPERS — shared by all temperature-axis boxplot functions
 # =============================================================================
@@ -250,6 +283,32 @@ def _build_temp_stats(
     return temp_stats
 
 
+def _select_source_rows(
+    results_df: pd.DataFrame,
+    source: Optional[str],
+    value_col_template: str,
+    bin_nums: list,
+    include_used: bool = False,
+) -> pd.DataFrame:
+    """Select events that can contribute to the requested source plot."""
+    base_df = (
+        results_df.copy()
+        if include_used
+        else results_df[results_df["config_key"].apply(_is_base_config)].copy()
+    )
+    if source != "croom":
+        return base_df
+
+    value_cols = [value_col_template.format(n=b, source=source) for b in bin_nums]
+    available_cols = [col for col in value_cols if col in results_df.columns]
+    if not available_cols:
+        return results_df.iloc[0:0].copy()
+
+    # C_room is available for fleet-period events, which are _Used configs and
+    # therefore intentionally excluded by _is_base_config.
+    return results_df[results_df[available_cols].notna().any(axis=1)].copy()
+
+
 # Configuration for the five fixed-temperature-axis boxplot functions.
 # Keys: col_template, ylabel, title_metric, title_note, hline (None or float),
 #       has_source (bool — True for metrics computed once per source),
@@ -300,6 +359,7 @@ _TEMP_BOXPLOT_CONFIG = {
         hline=None,
         has_source=True,
         sources=("quantaq", "croom"),
+        include_used=True,
     ),
 }
 
@@ -359,6 +419,7 @@ def _draw_temp_axis_boxplot(
     cfg: dict,
     rh_data: "Optional[pd.DataFrame]" = None,
     x_range: "Optional[tuple]" = None,
+    start_date: "Optional[str]" = None,
 ) -> None:
     """
     Shared implementation for all four fixed-temperature-axis boxplot functions.
@@ -380,7 +441,9 @@ def _draw_temp_axis_boxplot(
         rh_data: Optional DataFrame with 'datetime' and 'RH_bedroom' columns.
         x_range: Optional (xmin, xmax, xtick_step) tuple in °C to override the
                  BOXPLOT_CONFIG temp axis range.
+        start_date: Optional start date string for filtering events by shower_on.
     """
+    results_df = _filter_by_start_date(results_df, start_date)
     apply_style()
 
     if results_df.empty or "config_key" not in results_df.columns:
@@ -448,6 +511,22 @@ def _draw_temp_axis_boxplot(
         sources = (None,)
 
     for source in sources:
+        source_df = _select_source_rows(
+            results_df,
+            source,
+            cfg["col_template"],
+            all_bin_nums,
+            include_used=cfg.get("include_used", False),
+        )
+        if source_df.empty:
+            continue
+
+        config_keys = sort_config_keys_by_water_temp(
+            [k for k in source_df["config_key"].dropna().unique()]
+        )
+        if not config_keys:
+            continue
+        temp_map = {k: _extract_config_temp(k) for k in config_keys}
         source_suffix = f"_{source}" if source else ""
         source_note = f" ({source} source)" if source else ""
 
@@ -456,7 +535,7 @@ def _draw_temp_axis_boxplot(
                 continue
 
             value_cols = [cfg["col_template"].format(n=b, source=source) for b in group_bins]
-            temp_stats = _build_temp_stats(base_df, config_keys, temp_map, value_cols)
+            temp_stats = _build_temp_stats(source_df, config_keys, temp_map, value_cols)
 
             fig, ax = create_figure(figsize=BOXPLOT_CONFIG["figsize"])
             if isinstance(ax, list):
@@ -466,7 +545,7 @@ def _draw_temp_axis_boxplot(
                 global_idx = all_bin_nums.index(bin_num)
                 color = SENSOR_COLORS[global_idx % len(SENSOR_COLORS)]
                 col = cfg["col_template"].format(n=bin_num, source=source)
-                if col not in base_df.columns:
+                if col not in source_df.columns:
                     continue
 
                 positions, data = [], []
@@ -474,7 +553,7 @@ def _draw_temp_axis_boxplot(
                     temp = temp_map.get(config_key)
                     if temp is None:
                         continue
-                    values = base_df[base_df["config_key"] == config_key][col].dropna().values
+                    values = source_df[source_df["config_key"] == config_key][col].dropna().values
                     if len(values) > 0:
                         positions.append(temp)
                         data.append(values)
@@ -561,6 +640,7 @@ def plot_emission_boxplot(
     output_path: Path,
     rh_data: "Optional[pd.DataFrame]" = None,
     x_range: "Optional[tuple]" = None,
+    start_date: "Optional[str]" = None,
 ) -> None:
     """Three box-and-whisker figures of total particle emission (E_total) by water temperature.
 
@@ -570,6 +650,7 @@ def plot_emission_boxplot(
         output_path: Base path; ``_bin0-2`` / ``_bin3-6`` / ``_bin7-11`` suffixes are appended.
         rh_data: Optional DataFrame with 'datetime' and 'RH_bedroom' for RH annotation.
         x_range: Optional (xmin, xmax, xtick_step) in °C to override the default 5–60 °C axis.
+        start_date: Optional start date string. Events with shower_on < start_date are excluded.
     """
     _draw_temp_axis_boxplot(
         results_df,
@@ -578,6 +659,7 @@ def plot_emission_boxplot(
         _TEMP_BOXPLOT_CONFIG["emission_etotal"],
         rh_data,
         x_range,
+        start_date,
     )
 
 
@@ -587,6 +669,7 @@ def plot_deposition_rate_boxplot(
     output_path: Path,
     rh_data: "Optional[pd.DataFrame]" = None,
     x_range: "Optional[tuple]" = None,
+    start_date: "Optional[str]" = None,
 ) -> None:
     """Three box-and-whisker figures of unclamped other process rate (beta_raw_mean) by water temperature.
 
@@ -604,6 +687,7 @@ def plot_deposition_rate_boxplot(
         _TEMP_BOXPLOT_CONFIG["deposition_rate"],
         rh_data,
         x_range,
+        start_date,
     )
 
 
@@ -613,6 +697,7 @@ def plot_emission_rate_boxplot(
     output_path: Path,
     rh_data: "Optional[pd.DataFrame]" = None,
     x_range: "Optional[tuple]" = None,
+    start_date: "Optional[str]" = None,
 ) -> None:
     """Three box-and-whisker figures of mean emission rate (E_mean, #/min) by water temperature.
 
@@ -630,6 +715,7 @@ def plot_emission_rate_boxplot(
         _TEMP_BOXPLOT_CONFIG["emission_rate"],
         rh_data,
         x_range,
+        start_date,
     )
 
 
@@ -639,6 +725,7 @@ def plot_penetration_factor_boxplot(
     output_path: Path,
     rh_data: "Optional[pd.DataFrame]" = None,
     x_range: "Optional[tuple]" = None,
+    start_date: "Optional[str]" = None,
 ) -> None:
     """Three box-and-whisker figures of penetration factor (p_mean) by water temperature.
 
@@ -656,6 +743,7 @@ def plot_penetration_factor_boxplot(
         _TEMP_BOXPLOT_CONFIG["penetration_factor"],
         rh_data,
         x_range,
+        start_date,
     )
 
 
@@ -665,6 +753,7 @@ def plot_inhaled_dose_boxplot(
     output_path: Path,
     rh_data: "Optional[pd.DataFrame]" = None,
     x_range: "Optional[tuple]" = None,
+    start_date: "Optional[str]" = None,
 ) -> None:
     """Three box-and-whisker figures of cumulative inhaled dose by water temperature.
 
@@ -687,6 +776,7 @@ def plot_inhaled_dose_boxplot(
         _TEMP_BOXPLOT_CONFIG["inhaled_dose"],
         rh_data,
         x_range,
+        start_date,
     )
 
 
@@ -702,10 +792,17 @@ def plot_emission_etotal_by_metric_boxplot(
     value_col_template: str = "bin{n}_{source}_E_total",
     value_label: str = "Total Emission E_total (#)",
     metric_title: str = "Particle Emission",
+    include_used: bool = False,
+    start_date: "Optional[str]" = None,
 ) -> None:
     """
     Create three box-and-whisker figures of a source-dependent metric (default:
     E_total) positioned along a continuous metric axis.
+
+    Parameters:
+        ...
+        start_date: Optional start date string for filtering events by shower_on.
+
 
     Produces one figure for each bin group (Bin 0–2, 3–6, 7–11), for one
     source (default: outside/entry air-change-rate) — the plotted metric is
@@ -747,7 +844,9 @@ def plot_emission_etotal_by_metric_boxplot(
         value_label: Y-axis label for the plotted metric.
         metric_title: Metric name used in the figure title and companion .md
                       (e.g. "Particle Emission", "Cumulative Inhaled Dose").
+        start_date: Optional start date string for filtering events by shower_on.
     """
+    results_df = _filter_by_start_date(results_df, start_date)
     apply_style()
 
     if results_df.empty or "config_key" not in results_df.columns:
@@ -755,7 +854,14 @@ def plot_emission_etotal_by_metric_boxplot(
     if metric_col not in results_df.columns:
         return
 
-    base_df = results_df[results_df["config_key"].apply(_is_base_config)].copy()
+    all_bin_nums = list(particle_bins.keys())
+    base_df = _select_source_rows(
+        results_df,
+        source,
+        value_col_template,
+        all_bin_nums,
+        include_used=include_used,
+    )
 
     if base_df.empty:
         return
@@ -766,8 +872,6 @@ def plot_emission_etotal_by_metric_boxplot(
 
     if not config_keys:
         return
-
-    all_bin_nums = list(particle_bins.keys())
 
     bin_groups = [
         ([b for b in all_bin_nums if b <= 2], "bin0-2"),
@@ -961,6 +1065,7 @@ def plot_emission_etotal_by_showerhead_boxplot(
     value_col_template: str = "bin{n}_{source}_E_total",
     value_label: str = "Total Emission E_total (#)",
     metric_title: str = "Particle Emission",
+    start_date: "Optional[str]" = None,
 ) -> None:
     """
     Create three box-and-whisker figures of a source-dependent metric (default:
@@ -1001,7 +1106,9 @@ def plot_emission_etotal_by_showerhead_boxplot(
         value_label: Y-axis label for the plotted metric.
         metric_title: Metric name used in the figure title and companion .md
                       (e.g. "Particle Emission", "Cumulative Inhaled Dose").
+        start_date: Optional start date string for filtering events by shower_on.
     """
+    results_df = _filter_by_start_date(results_df, start_date)
     apply_style()
 
     if results_df.empty or "config_key" not in results_df.columns:

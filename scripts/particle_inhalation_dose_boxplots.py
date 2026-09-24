@@ -180,7 +180,11 @@ def _load_decay_metrics(output_dir: Path) -> pd.DataFrame:
 
     bin_nums = list(PARTICLE_BINS.keys())
     for source in ACH_SOURCES:
-        cols = [f"bin{b}_{source}_beta_other" for b in bin_nums if f"bin{b}_{source}_beta_other" in df.columns]
+        cols = [
+            f"bin{b}_{source}_beta_other"
+            for b in bin_nums
+            if f"bin{b}_{source}_beta_other" in df.columns
+        ]
         df[f"avg_beta_{source}"] = df[cols].mean(axis=1) if cols else np.nan
     p_cols = [f"bin{b}_p_mean" for b in bin_nums if f"bin{b}_p_mean" in df.columns]
     df["avg_p"] = df[p_cols].mean(axis=1) if p_cols else np.nan
@@ -222,7 +226,9 @@ def _load_bedroom_conditions() -> "tuple[Optional[pd.DataFrame], Optional[pd.Dat
         print("  Loaded Bedroom_Conditions RH/temperature.")
         return metrics_df, rh_data
     except Exception as e:
-        print(f"  Note: Could not load Bedroom_Conditions (metric-axis x-axis and RH annotations skipped): {e}")
+        print(
+            f"  Note: Could not load Bedroom_Conditions (metric-axis x-axis and RH annotations skipped): {e}"
+        )
         return None, None
 
 
@@ -260,9 +266,13 @@ def build_dose_plot_df(output_dir: Path) -> "tuple[pd.DataFrame, Optional[pd.Dat
     if "flow_rate" in dose_df.columns and dose_df["flow_rate"].notna().any():
         n_before = len(dose_df)
         dose_df = dose_df[
-            dose_df["flow_rate"].between(FLOW_RATE_MIN, FLOW_RATE_MAX) | dose_df["flow_rate"].isna()
+            dose_df["flow_rate"].between(FLOW_RATE_MIN, FLOW_RATE_MAX)
+            | dose_df["flow_rate"].isna()
+            | dose_df["config_key"].astype(str).str.contains("_Used")
         ].copy()
-        print(f"  Flow rate filter ({FLOW_RATE_MIN}-{FLOW_RATE_MAX} LPM): {n_before} -> {len(dose_df)} rows")
+        print(
+            f"  Flow rate filter ({FLOW_RATE_MIN}-{FLOW_RATE_MAX} LPM): {n_before} -> {len(dose_df)} rows"
+        )
 
     return dose_df, rh_data
 
@@ -272,7 +282,9 @@ def build_dose_plot_df(output_dir: Path) -> "tuple[pd.DataFrame, Optional[pd.Dat
 # =============================================================================
 
 
-def generate_dose_boxplots(plot_df: pd.DataFrame, rh_data: "Optional[pd.DataFrame]", plot_dir: Path) -> None:
+def generate_dose_boxplots(
+    plot_df: pd.DataFrame, rh_data: "Optional[pd.DataFrame]", plot_dir: Path
+) -> None:
     """Generate the full inhaled-dose boxplot suite into *plot_dir*."""
     plot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -292,7 +304,12 @@ def generate_dose_boxplots(plot_df: pd.DataFrame, rh_data: "Optional[pd.DataFram
     # ── Metric axis: bedroom RH, bedroom temperature (dose-source-only) ─────
     _metric_axes_shared = [
         ("bedroom_rh", "Bedroom RH (%)", "inhaled_dose_by_bedroom_rh_boxplot.png", (23, 43, 1)),
-        ("bedroom_temp", "Bedroom Temperature (°C)", "inhaled_dose_by_bedroom_temp_boxplot.png", (14.9, 18.2, 0.1)),
+        (
+            "bedroom_temp",
+            "Bedroom Temperature (°C)",
+            "inhaled_dose_by_bedroom_temp_boxplot.png",
+            (14.9, 18.2, 0.1),
+        ),
     ]
     for metric_col, metric_label, filename, x_range in _metric_axes_shared:
         for dose_source in DOSE_SOURCES:
@@ -309,6 +326,7 @@ def generate_dose_boxplots(plot_df: pd.DataFrame, rh_data: "Optional[pd.DataFram
                     value_col_template=DOSE_COL_TEMPLATE,
                     value_label=DOSE_VALUE_LABEL,
                     metric_title=DOSE_METRIC_TITLE,
+                    include_used=True,
                 )
                 print(f"  Generated: {filename} ({dose_source} dose source)")
             except Exception as e:
@@ -317,10 +335,25 @@ def generate_dose_boxplots(plot_df: pd.DataFrame, rh_data: "Optional[pd.DataFram
     # ── Metric axis: ACR, avg beta -- crossed with both dose sources, since ─
     # dose has no air-change-rate source of its own (see module docstring).
     _metric_axes_per_ach_source = [
-        ("lambda_{source}", "Air Change Rate λ (h⁻¹)", "inhaled_dose_by_acr_{source}_boxplot.png", (0.75, 1.65, 0.05)),
-        ("avg_beta_{source}", "Avg. Other Process Rate β (h⁻¹)", "inhaled_dose_by_beta_{source}_boxplot.png", (-0.35, 0.35, 0.05)),
+        (
+            "lambda_{source}",
+            "Air Change Rate λ (h⁻¹)",
+            "inhaled_dose_by_acr_{source}_boxplot.png",
+            (0.75, 1.65, 0.05),
+        ),
+        (
+            "avg_beta_{source}",
+            "Avg. Other Process Rate β (h⁻¹)",
+            "inhaled_dose_by_beta_{source}_boxplot.png",
+            (-0.35, 0.35, 0.05),
+        ),
     ]
-    for metric_col_template, metric_label, filename_template, x_range in _metric_axes_per_ach_source:
+    for (
+        metric_col_template,
+        metric_label,
+        filename_template,
+        x_range,
+    ) in _metric_axes_per_ach_source:
         for ach_source in ACH_SOURCES:
             metric_col = metric_col_template.format(source=ach_source)
             filename = filename_template.format(source=ach_source)
@@ -338,8 +371,11 @@ def generate_dose_boxplots(plot_df: pd.DataFrame, rh_data: "Optional[pd.DataFram
                         value_col_template=DOSE_COL_TEMPLATE,
                         value_label=DOSE_VALUE_LABEL,
                         metric_title=DOSE_METRIC_TITLE,
+                        include_used=True,
                     )
-                    print(f"  Generated: {filename} ({ach_source} ACH source, {dose_source} dose source)")
+                    print(
+                        f"  Generated: {filename} ({ach_source} ACH source, {dose_source} dose source)"
+                    )
                 except Exception as e:
                     print(f"  Error generating {filename} ({ach_source}/{dose_source}): {e}")
 
@@ -356,17 +392,49 @@ def generate_dose_boxplots(plot_df: pd.DataFrame, rh_data: "Optional[pd.DataFram
                 value_label=DOSE_VALUE_LABEL,
                 metric_title=DOSE_METRIC_TITLE,
             )
-            print(f"  Generated: inhaled_dose_by_showerhead_boxplot.png ({dose_source} dose source)")
+            print(
+                f"  Generated: inhaled_dose_by_showerhead_boxplot.png ({dose_source} dose source)"
+            )
         except Exception as e:
             print(f"  Error generating inhaled_dose_by_showerhead_boxplot ({dose_source}): {e}")
 
     # ── Condition-comparison families (inhaled-dose panel only) ─────────────
     _dose_comparison_families = [
-        ("spray_pattern", SPRAY_PATTERN_GROUP_DEFS, SPRAY_PATTERN_TITLE, SPRAY_PATTERN_XLABEL, SPRAY_PATTERN_TEMP_FILTER),
-        ("head_type", HEAD_TYPE_GROUP_DEFS, HEAD_TYPE_TITLE, HEAD_TYPE_XLABEL, HEAD_TYPE_TEMP_FILTER),
-        ("mannequin", MANNEQUIN_GROUP_DEFS, MANNEQUIN_TITLE, MANNEQUIN_XLABEL, MANNEQUIN_TEMP_FILTER),
-        ("bath_door_position", BATH_DOOR_GROUP_DEFS, BATH_DOOR_TITLE, BATH_DOOR_XLABEL, BATH_DOOR_TEMP_FILTER),
-        ("bedroom_door_position", BEDROOM_DOOR_GROUP_DEFS, BEDROOM_DOOR_TITLE, BEDROOM_DOOR_XLABEL, BEDROOM_DOOR_TEMP_FILTER),
+        (
+            "spray_pattern",
+            SPRAY_PATTERN_GROUP_DEFS,
+            SPRAY_PATTERN_TITLE,
+            SPRAY_PATTERN_XLABEL,
+            SPRAY_PATTERN_TEMP_FILTER,
+        ),
+        (
+            "head_type",
+            HEAD_TYPE_GROUP_DEFS,
+            HEAD_TYPE_TITLE,
+            HEAD_TYPE_XLABEL,
+            HEAD_TYPE_TEMP_FILTER,
+        ),
+        (
+            "mannequin",
+            MANNEQUIN_GROUP_DEFS,
+            MANNEQUIN_TITLE,
+            MANNEQUIN_XLABEL,
+            MANNEQUIN_TEMP_FILTER,
+        ),
+        (
+            "bath_door_position",
+            BATH_DOOR_GROUP_DEFS,
+            BATH_DOOR_TITLE,
+            BATH_DOOR_XLABEL,
+            BATH_DOOR_TEMP_FILTER,
+        ),
+        (
+            "bedroom_door_position",
+            BEDROOM_DOOR_GROUP_DEFS,
+            BEDROOM_DOOR_TITLE,
+            BEDROOM_DOOR_XLABEL,
+            BEDROOM_DOOR_TEMP_FILTER,
+        ),
         ("fan_status", FAN_GROUP_DEFS, FAN_TITLE, FAN_XLABEL, FAN_TEMP_FILTER),
     ]
     for stem_prefix, group_defs, title_base, x_label, temp_filter in _dose_comparison_families:
@@ -382,7 +450,9 @@ def generate_dose_boxplots(plot_df: pd.DataFrame, rh_data: "Optional[pd.DataFram
                 rh_data=rh_data,
                 temp_filter=temp_filter,
             )
-            print(f"  Generated: {stem_prefix}_inhaled_dose_boxplot_{{bin0-2,bin3-6,bin7-11}}_{{quantaq,croom}}.png")
+            print(
+                f"  Generated: {stem_prefix}_inhaled_dose_boxplot_{{bin0-2,bin3-6,bin7-11}}_{{quantaq,croom}}.png"
+            )
         except Exception as e:
             print(f"  Error generating {stem_prefix} inhaled-dose comparison figures: {e}")
 

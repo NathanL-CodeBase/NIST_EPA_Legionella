@@ -530,7 +530,7 @@ def make_figure(
 # =============================================================================
 
 
-def generate_summary_plots(results_df: pd.DataFrame, output_dir: Path) -> None:
+def generate_summary_plots(results_df: pd.DataFrame, output_dir: Path, start_date: str | None = None) -> None:
     """
     Generate the summary bar charts and boxplot families (outside/entry, E1/E2
     only). Ported from scripts/particle_decay_analysis.py's
@@ -539,6 +539,16 @@ def generate_summary_plots(results_df: pd.DataFrame, output_dir: Path) -> None:
 
     Applies the FLOW_RATE_MIN/FLOW_RATE_MAX filter before any figure is drawn
     (Excel and the per-event pm_decay figures are unaffected).
+
+    Parameters
+    ----------
+    results_df : pd.DataFrame
+        Loaded summary results.
+    output_dir : Path
+        Output directory for figures.
+    start_date : str | None
+        Optional inclusive start date YYYY-MM-DD for boxplot filtering. Passed to
+        boxplot functions that support it; bar charts are not filtered.
     """
     # Undo the Excel unit-suffix rename (e.g. "bin3_outside_beta_other (h-1)"
     # -> "bin3_outside_beta_other") -- src.plot_particle expects plain names.
@@ -670,6 +680,7 @@ def generate_summary_plots(results_df: pd.DataFrame, output_dir: Path) -> None:
                 plot_dir / filename,
                 rh_data=rh_data,
                 x_range=x_range,
+                start_date=start_date,
             )
             print(f"  Generated: {filename}")
         except Exception as e:
@@ -714,6 +725,7 @@ def generate_summary_plots(results_df: pd.DataFrame, output_dir: Path) -> None:
                     source=_source,
                     rh_data=rh_data,
                     x_range=x_range,
+                    start_date=start_date,
                 )
                 print(f"  Generated: {filename} ({_source} source, bin0-2 and bin3-6)")
             except Exception as e:
@@ -748,6 +760,7 @@ def generate_summary_plots(results_df: pd.DataFrame, output_dir: Path) -> None:
                     source=_source,
                     rh_data=rh_data,
                     x_range=x_range,
+                    start_date=start_date,
                 )
                 print(f"  Generated: {filename} ({_source} source, bin0-2 and bin3-6)")
             except Exception as e:
@@ -763,6 +776,7 @@ def generate_summary_plots(results_df: pd.DataFrame, output_dir: Path) -> None:
                 plot_dir / _sh_filename,
                 source=_source,
                 rh_data=rh_data,
+                start_date=start_date,
             )
             print(f"  Generated: {_sh_filename} ({_source} source, bin0-2 and bin3-6)")
         except Exception as e:
@@ -834,6 +848,16 @@ def main() -> None:
             "matching particle_decay_analysis.py)"
         ),
     )
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        default=None,
+        help=(
+            "Inclusive start date for boxplot figures, format YYYY-MM-DD. "
+            "Filters events with shower_on >= start-date. Per-bin variant comparison "
+            "figures are not filtered."
+        ),
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir) if args.output_dir else get_data_root() / "output"
@@ -861,7 +885,7 @@ def main() -> None:
                 make_figure(df, bin_index, metric_key, variant_a, variant_b, pair_stem, output_path)
                 print(f"  Saved {output_path.name}")
 
-    generate_summary_plots(df, output_dir)
+    generate_summary_plots(df, output_dir, start_date=args.start_date)
 
     print("\n" + "=" * 70)
     print("Done")

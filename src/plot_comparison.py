@@ -163,11 +163,13 @@ def _draw_categorical_comparison_boxplot(
         header = f"{tick_lbl.replace(chr(10), ' ')} | n={len(gdf)}"
         events_list = []
         for _, row in gdf.sort_values("event_number").iterrows():
-            events_list.append((
-                row.get("event_number"),
-                row.get("test_name", ""),
-                row.get("config_key", gk),
-            ))
+            events_list.append(
+                (
+                    row.get("event_number"),
+                    row.get("test_name", ""),
+                    row.get("config_key", gk),
+                )
+            )
         md_groups.append({"header": header, "events": events_list})
     _write_boxplot_companion_md(output_path, title_base, md_groups)
 
@@ -385,7 +387,9 @@ SPRAY_PATTERN_GROUP_DEFS: "List[_GroupDef]" = [
     (
         "Narrow",
         "Pepco\nNarrow",
-        lambda ck: "_Pepco_Narrow_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck,
+        lambda ck: (
+            "_Pepco_Narrow_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck
+        ),
     ),
 ]
 SPRAY_PATTERN_TITLE = "Spray Pattern Effect"
@@ -449,7 +453,9 @@ HEAD_TYPE_GROUP_DEFS: "List[_GroupDef]" = [
     (
         "Pepco_Narrow",
         "Pepco\nNarrow",
-        lambda ck: "_Pepco_Narrow_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck,
+        lambda ck: (
+            "_Pepco_Narrow_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck
+        ),
     ),
     (
         "FilterWand",
@@ -470,10 +476,18 @@ HEAD_TYPE_GROUP_DEFS: "List[_GroupDef]" = [
         "Used_SingleWide",
         "Used\nSingleWide",
         lambda ck: (
-            "_Used_SingleWide_BathDoorOpen_" in ck
-            or "_Used_SingleWide1_BathDoorOpen_" in ck
-            or "_Used_SingleWide2_BathDoorOpen_" in ck
-        ) and "_FanOff" in ck,
+            (
+                "_Used_SingleWide_BathDoorOpen_" in ck
+                or "_Used_SingleWide1_BathDoorOpen_" in ck
+                or "_Used_SingleWide2_BathDoorOpen_" in ck
+            )
+            and "_FanOff" in ck
+        ),
+    ),
+    (
+        "Used_SingleNarrow",
+        "Used\nSingleNarrow",
+        lambda ck: "_Used_SingleNarrow_BathDoorOpen_" in ck and "_FanOff" in ck,
     ),
 ]
 HEAD_TYPE_TITLE = "Shower Head Type Effect"
@@ -522,7 +536,7 @@ MANNEQUIN_GROUP_DEFS: "List[_GroupDef]" = [
         "No_Mannequin_Narrow",
         "No Mannequin\nNarrow",
         lambda ck: (
-            "_Pepco_Narrow_" in ck
+            ("_Pepco_Narrow_" in ck or "_Used_SingleNarrow_" in ck)
             and "_Mannequin" not in ck
             and "_BathDoorOpen_" in ck
             and "_FanOff" in ck
@@ -542,7 +556,7 @@ MANNEQUIN_GROUP_DEFS: "List[_GroupDef]" = [
         "Mannequin_Narrow",
         "With Mannequin\nNarrow",
         lambda ck: (
-            "_Pepco_Narrow_" in ck
+            ("_Pepco_Narrow_" in ck or "_Used_SingleNarrow_" in ck)
             and "_Mannequin_BathDoorOpen_" in ck
             and "_FanOff" in ck
         ),
@@ -550,11 +564,7 @@ MANNEQUIN_GROUP_DEFS: "List[_GroupDef]" = [
     (
         "Mannequin_Wide",
         "With Mannequin\nWide",
-        lambda ck: (
-            "_Pepco_Wide_" in ck
-            and "_Mannequin_BathDoorOpen_" in ck
-            and "_FanOff" in ck
-        ),
+        lambda ck: "_Pepco_Wide_" in ck and "_Mannequin_BathDoorOpen_" in ck and "_FanOff" in ck,
     ),
 ]
 MANNEQUIN_TITLE = "Mannequin Presence Effect by Head Geometry"
@@ -624,8 +634,7 @@ BEDROOM_DOOR_GROUP_DEFS: "List[_GroupDef]" = [
         "BdrmDoorClosed",
         "Bedroom Door\nClosed",
         lambda ck: (
-            "_Pepco_Narrow_BathDoorOpen_BdrmDoorClosed_FanOff" in ck
-            and "_Mannequin" not in ck
+            "_Pepco_Narrow_BathDoorOpen_BdrmDoorClosed_FanOff" in ck and "_Mannequin" not in ck
         ),
     ),
     (
@@ -705,9 +714,7 @@ FAN_GROUP_DEFS: "List[_GroupDef]" = [
     (
         "FanOff",
         "Fan Off",
-        lambda ck: (
-            "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck
-        ),
+        lambda ck: "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck,
     ),
     (
         "FanOn",
