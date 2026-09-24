@@ -31,8 +31,8 @@ Output Files:
         event per source (QuantAQ-inside vs. C_room). Style matches
         scripts/particle_emission_variant_figures.py
         (src.plot_style.style_moduair_figure: 1600x800, 12pt, no title,
-        click-to-hide legend, hover enabled), with a shaded span marking the
-        fleet co-location window where C_room is available.
+        click-to-hide legend, hover enabled), with a vertical dashed line at
+        ROOM_CUTOVER marking the start of C_room availability.
 
 Author: Nathan Lima
 Institution: National Institute of Standards and Technology (NIST)
@@ -43,6 +43,9 @@ Update log:
     2026-09-23  Replaced the blended series with two independent sources
         (QuantAQ-inside for all events, C_room for the fleet window only)
         plotted side by side on each bin figure; removed the boxplots.
+    2026-09-24  Changed C_room availability indicator from shaded span with label
+        to a vertical dashed line at ROOM_CUTOVER, matching
+        particle_emission_variant_figures.py style.
 """
 
 import sys
@@ -51,7 +54,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from bokeh.models import BoxAnnotation, ColumnDataSource, DatetimeTickFormatter, HoverTool, Label
+from bokeh.models import ColumnDataSource, DatetimeTickFormatter, HoverTool, Span
 from bokeh.plotting import figure, output_file, save
 
 warnings.filterwarnings("ignore")
@@ -65,8 +68,8 @@ from src.event_manager import is_event_excluded  # noqa: E402
 from src.inhalation_dose import compute_cumulative_dose, resample_to_1min  # noqa: E402
 from src.particle_calculations import PARTICLE_BINS  # noqa: E402
 from src.particle_data_loader import get_events_from_registry, load_quantaq_data  # noqa: E402
-from src.particle_room_correction import FLEET_END, ROOM_CUTOVER, build_croom_data  # noqa: E402
-from src.plot_style import MODUAIR_TEXT_PT, SENSOR_COLORS, style_moduair_figure  # noqa: E402
+from src.particle_room_correction import ROOM_CUTOVER, build_croom_data  # noqa: E402
+from src.plot_style import SENSOR_COLORS, style_moduair_figure  # noqa: E402
 
 # =============================================================================
 # Configuration
@@ -83,10 +86,6 @@ SOURCES = [
     ("quantaq", "QuantAQ-inside (MOD-PM-00195)", SENSOR_COLORS[0]),
     ("croom", "C_room (fleet average)", SENSOR_COLORS[1]),
 ]
-
-FLEET_SPAN_COLOR = "gray"
-FLEET_SPAN_ALPHA = 0.08
-FLEET_SPAN_LABEL = "Fleet co-location period (C_room available)"
 
 
 # =============================================================================
@@ -253,22 +252,12 @@ def _make_bin_figure(dose_df: pd.DataFrame, bin_index: int, output_path: Path) -
     fig.add_tools(hover)
 
     fig.add_layout(
-        BoxAnnotation(
-            left=ROOM_CUTOVER,
-            right=FLEET_END,
-            fill_color=FLEET_SPAN_COLOR,
-            fill_alpha=FLEET_SPAN_ALPHA,
-        )
-    )
-    fig.add_layout(
-        Label(
-            x=ROOM_CUTOVER,
-            y=fig.height - 40,
-            y_units="screen",
-            x_offset=5,
-            text=FLEET_SPAN_LABEL,
-            text_font_size=MODUAIR_TEXT_PT,
-            text_color=FLEET_SPAN_COLOR,
+        Span(
+            location=ROOM_CUTOVER,
+            dimension="height",
+            line_color="gray",
+            line_dash="dashed",
+            line_width=1.5,
         )
     )
 
