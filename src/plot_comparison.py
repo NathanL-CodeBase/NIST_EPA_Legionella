@@ -21,11 +21,17 @@ Functions:
     - plot_mannequin_comparison_boxplots: with vs. without mannequin
     - plot_door_comparison_boxplots: door open vs. door closed (fan on, Pepco Wide)
     - plot_fan_comparison_boxplots: fan off vs. fan on (door open, Pepco Wide)
+    - plot_condition_dose_comparison_boxplot: generic inhaled-dose-only panel for
+      any of the above families, reusing their group_defs/title/x_label/temp_filter
+      constants (SPRAY_PATTERN_*, HEAD_TYPE_*, MANNEQUIN_*, BATH_DOOR_*,
+      BEDROOM_DOOR_*, FAN_*)
 
 Output naming:
     - {stem}_{metric}_boxplot_{bin0-2,bin3-6,bin7-11}.png (penetration_factor)
     - {stem}_{metric}_boxplot_{bin0-2,bin3-6,bin7-11}_{outside,entry}.png
       (emission_etotal, other_process_rate)
+    - {stem}_inhaled_dose_boxplot_{bin0-2,bin3-6,bin7-11}_{quantaq,croom}.png
+      (plot_condition_dose_comparison_boxplot)
 
 Author: Nathan Lima
 Institution: National Institute of Standards and Technology (NIST)
@@ -165,10 +171,15 @@ def _draw_categorical_comparison_boxplot(
         md_groups.append({"header": header, "events": events_list})
     _write_boxplot_companion_md(output_path, title_base, md_groups)
 
-    # Lambda-dependent metrics (has_source=True) are drawn twice, once per
-    # air-change-rate source, bounding the result; source-independent metrics
-    # (e.g. penetration factor) are drawn once with no source suffix.
-    sources = ("outside", "entry") if cfg.get("has_source", True) else (None,)
+    # Source-dependent metrics (has_source=True) are drawn once per entry in
+    # cfg["sources"] (default ("outside", "entry"), the air-change-rate pair;
+    # e.g. inhaled_dose uses ("quantaq", "croom") instead), bounding the
+    # result; source-independent metrics (e.g. penetration factor) are drawn
+    # once with no source suffix.
+    if cfg.get("has_source", True):
+        sources = cfg.get("sources", ("outside", "entry"))
+    else:
+        sources = (None,)
 
     for source in sources:
         source_suffix = f"_{source}" if source else ""
@@ -361,6 +372,27 @@ def _run_comparison_family(
 # 1. Spray Pattern comparison  (W36–42 °C, Pepco head, no mannequin, bath door open, fan off)
 # ---------------------------------------------------------------------------
 
+# Group definitions, title, x-label, and temperature filter are module-level
+# constants (rather than local to plot_spray_pattern_comparison_boxplots) so
+# plot_condition_dose_comparison_boxplot can reuse the same condition filters
+# for the inhaled-dose panel without duplicating them.
+SPRAY_PATTERN_GROUP_DEFS: "List[_GroupDef]" = [
+    (
+        "Wide",
+        "Pepco\nWide",
+        lambda ck: "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck,
+    ),
+    (
+        "Narrow",
+        "Pepco\nNarrow",
+        lambda ck: "_Pepco_Narrow_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck,
+    ),
+]
+SPRAY_PATTERN_TITLE = "Spray Pattern Effect"
+SPRAY_PATTERN_XLABEL = "Spray Pattern"
+SPRAY_PATTERN_TEMP_FILTER = (36.0, 42.0)
+
+
 def plot_spray_pattern_comparison_boxplots(
     results_df: pd.DataFrame,
     particle_bins: Dict,
@@ -379,34 +411,75 @@ def plot_spray_pattern_comparison_boxplots(
         plot_dir: Directory for output files.
         rh_data: Optional RH DataFrame for annotations.
     """
-    group_defs: "List[_GroupDef]" = [
-        (
-            "Wide",
-            "Pepco\nWide",
-            lambda ck: "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck,
-        ),
-        (
-            "Narrow",
-            "Pepco\nNarrow",
-            lambda ck: "_Pepco_Narrow_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck,
-        ),
-    ]
     _run_comparison_family(
         results_df,
         particle_bins,
         plot_dir,
         stem_prefix="spray_pattern",
-        group_defs=group_defs,
-        title_base="Spray Pattern Effect",
-        x_label="Spray Pattern",
+        group_defs=SPRAY_PATTERN_GROUP_DEFS,
+        title_base=SPRAY_PATTERN_TITLE,
+        x_label=SPRAY_PATTERN_XLABEL,
         rh_data=rh_data,
-        temp_filter=(36.0, 42.0),
+        temp_filter=SPRAY_PATTERN_TEMP_FILTER,
     )
 
 
 # ---------------------------------------------------------------------------
 # 2. Shower Head comparison  (W36–42 °C, bath door open, fan off)
 # ---------------------------------------------------------------------------
+
+HEAD_TYPE_GROUP_DEFS: "List[_GroupDef]" = [
+    (
+        "Standard",
+        "Standard",
+        lambda ck: (
+            "_Pepco" not in ck
+            and "_FilterWand" not in ck
+            and "_Used" not in ck
+            and "_Mannequin" not in ck
+            and "_BathDoorOpen_" in ck
+            and "_FanOff" in ck
+        ),
+    ),
+    (
+        "Pepco_Wide",
+        "Pepco\nWide",
+        lambda ck: "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck,
+    ),
+    (
+        "Pepco_Narrow",
+        "Pepco\nNarrow",
+        lambda ck: "_Pepco_Narrow_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck,
+    ),
+    (
+        "FilterWand",
+        "Filter\nWand",
+        lambda ck: "_FilterWand_" in ck and "_BathDoorOpen_" in ck and "_FanOff" in ck,
+    ),
+    (
+        "Used_rainfall",
+        "Used\nRainfall",
+        lambda ck: "_Used_rainfall_BathDoorOpen_" in ck and "_FanOff" in ck,
+    ),
+    (
+        "Used_12Nozzle",
+        "Used\n12Nozzle",
+        lambda ck: "_Used_12Nozzle_BathDoorOpen_" in ck and "_FanOff" in ck,
+    ),
+    (
+        "Used_SingleWide",
+        "Used\nSingleWide",
+        lambda ck: (
+            "_Used_SingleWide_BathDoorOpen_" in ck
+            or "_Used_SingleWide1_BathDoorOpen_" in ck
+            or "_Used_SingleWide2_BathDoorOpen_" in ck
+        ) and "_FanOff" in ck,
+    ),
+]
+HEAD_TYPE_TITLE = "Shower Head Type Effect"
+HEAD_TYPE_XLABEL = "Shower Head Configuration"
+HEAD_TYPE_TEMP_FILTER = (36.0, 42.0)
+
 
 def plot_shower_head_comparison_boxplots(
     results_df: pd.DataFrame,
@@ -427,70 +500,67 @@ def plot_shower_head_comparison_boxplots(
         plot_dir: Directory for output files.
         rh_data: Optional RH DataFrame for annotations.
     """
-    group_defs: "List[_GroupDef]" = [
-        (
-            "Standard",
-            "Standard",
-            lambda ck: (
-                "_Pepco" not in ck
-                and "_FilterWand" not in ck
-                and "_Used" not in ck
-                and "_Mannequin" not in ck
-                and "_BathDoorOpen_" in ck
-                and "_FanOff" in ck
-            ),
-        ),
-        (
-            "Pepco_Wide",
-            "Pepco\nWide",
-            lambda ck: "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck,
-        ),
-        (
-            "Pepco_Narrow",
-            "Pepco\nNarrow",
-            lambda ck: "_Pepco_Narrow_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck,
-        ),
-        (
-            "FilterWand",
-            "Filter\nWand",
-            lambda ck: "_FilterWand_" in ck and "_BathDoorOpen_" in ck and "_FanOff" in ck,
-        ),
-        (
-            "Used_rainfall",
-            "Used\nRainfall",
-            lambda ck: "_Used_rainfall_BathDoorOpen_" in ck and "_FanOff" in ck,
-        ),
-        (
-            "Used_12Nozzle",
-            "Used\n12Nozzle",
-            lambda ck: "_Used_12Nozzle_BathDoorOpen_" in ck and "_FanOff" in ck,
-        ),
-        (
-            "Used_SingleWide",
-            "Used\nSingleWide",
-            lambda ck: (
-                "_Used_SingleWide_BathDoorOpen_" in ck
-                or "_Used_SingleWide1_BathDoorOpen_" in ck
-                or "_Used_SingleWide2_BathDoorOpen_" in ck
-            ) and "_FanOff" in ck,
-        ),
-    ]
     _run_comparison_family(
         results_df,
         particle_bins,
         plot_dir,
         stem_prefix="head_type",
-        group_defs=group_defs,
-        title_base="Shower Head Type Effect",
-        x_label="Shower Head Configuration",
+        group_defs=HEAD_TYPE_GROUP_DEFS,
+        title_base=HEAD_TYPE_TITLE,
+        x_label=HEAD_TYPE_XLABEL,
         rh_data=rh_data,
-        temp_filter=(36.0, 42.0),
+        temp_filter=HEAD_TYPE_TEMP_FILTER,
     )
 
 
 # ---------------------------------------------------------------------------
 # 3. Mannequin comparison  (W36–42 °C, Pepco head, bath door open, fan off)
 # ---------------------------------------------------------------------------
+
+MANNEQUIN_GROUP_DEFS: "List[_GroupDef]" = [
+    (
+        "No_Mannequin_Narrow",
+        "No Mannequin\nNarrow",
+        lambda ck: (
+            "_Pepco_Narrow_" in ck
+            and "_Mannequin" not in ck
+            and "_BathDoorOpen_" in ck
+            and "_FanOff" in ck
+        ),
+    ),
+    (
+        "No_Mannequin_Wide",
+        "No Mannequin\nWide",
+        lambda ck: (
+            "_Pepco_Wide_" in ck
+            and "_Mannequin" not in ck
+            and "_BathDoorOpen_" in ck
+            and "_FanOff" in ck
+        ),
+    ),
+    (
+        "Mannequin_Narrow",
+        "With Mannequin\nNarrow",
+        lambda ck: (
+            "_Pepco_Narrow_" in ck
+            and "_Mannequin_BathDoorOpen_" in ck
+            and "_FanOff" in ck
+        ),
+    ),
+    (
+        "Mannequin_Wide",
+        "With Mannequin\nWide",
+        lambda ck: (
+            "_Pepco_Wide_" in ck
+            and "_Mannequin_BathDoorOpen_" in ck
+            and "_FanOff" in ck
+        ),
+    ),
+]
+MANNEQUIN_TITLE = "Mannequin Presence Effect by Head Geometry"
+MANNEQUIN_XLABEL = "Mannequin / Head Geometry"
+MANNEQUIN_TEMP_FILTER = (36.0, 42.0)
+
 
 def plot_mannequin_comparison_boxplots(
     results_df: pd.DataFrame,
@@ -510,56 +580,16 @@ def plot_mannequin_comparison_boxplots(
         plot_dir: Directory for output files.
         rh_data: Optional RH DataFrame for annotations.
     """
-    group_defs: "List[_GroupDef]" = [
-        (
-            "No_Mannequin_Narrow",
-            "No Mannequin\nNarrow",
-            lambda ck: (
-                "_Pepco_Narrow_" in ck
-                and "_Mannequin" not in ck
-                and "_BathDoorOpen_" in ck
-                and "_FanOff" in ck
-            ),
-        ),
-        (
-            "No_Mannequin_Wide",
-            "No Mannequin\nWide",
-            lambda ck: (
-                "_Pepco_Wide_" in ck
-                and "_Mannequin" not in ck
-                and "_BathDoorOpen_" in ck
-                and "_FanOff" in ck
-            ),
-        ),
-        (
-            "Mannequin_Narrow",
-            "With Mannequin\nNarrow",
-            lambda ck: (
-                "_Pepco_Narrow_" in ck
-                and "_Mannequin_BathDoorOpen_" in ck
-                and "_FanOff" in ck
-            ),
-        ),
-        (
-            "Mannequin_Wide",
-            "With Mannequin\nWide",
-            lambda ck: (
-                "_Pepco_Wide_" in ck
-                and "_Mannequin_BathDoorOpen_" in ck
-                and "_FanOff" in ck
-            ),
-        ),
-    ]
     _run_comparison_family(
         results_df,
         particle_bins,
         plot_dir,
         stem_prefix="mannequin",
-        group_defs=group_defs,
-        title_base="Mannequin Presence Effect by Head Geometry",
-        x_label="Mannequin / Head Geometry",
+        group_defs=MANNEQUIN_GROUP_DEFS,
+        title_base=MANNEQUIN_TITLE,
+        x_label=MANNEQUIN_XLABEL,
         rh_data=rh_data,
-        temp_filter=(36.0, 42.0),
+        temp_filter=MANNEQUIN_TEMP_FILTER,
     )
 
 
@@ -569,6 +599,50 @@ def plot_mannequin_comparison_boxplots(
 #    4b. Bedroom door: Closed vs. Open vs. Ajar  (W36–42 °C, Used SingleWide,
 #        bath door open, fan off)
 # ---------------------------------------------------------------------------
+
+BATH_DOOR_GROUP_DEFS: "List[_GroupDef]" = [
+    (
+        "BathDoorOpen_FanOn",
+        "Bath Door Open\n(Fan On)",
+        lambda ck: "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOn" in ck,
+    ),
+    (
+        "BathDoorClosed_FanOn",
+        "Bath Door Closed\n(Fan On)",
+        lambda ck: "_Pepco_Wide_BathDoorClosed_" in ck and "_FanOn" in ck,
+    ),
+]
+BATH_DOOR_TITLE = "Bath Door Position Effect"
+BATH_DOOR_XLABEL = "Bath Door Position"
+BATH_DOOR_TEMP_FILTER = (36.0, 42.0)
+
+# Bedroom door — Pepco Narrow head, W36–42 °C, fan off, no mannequin.
+# Note: the Ajar group (May 4–7) coincided with the bath door also being Ajar,
+# so bath door position is not perfectly constant across the three groups.
+BEDROOM_DOOR_GROUP_DEFS: "List[_GroupDef]" = [
+    (
+        "BdrmDoorClosed",
+        "Bedroom Door\nClosed",
+        lambda ck: (
+            "_Pepco_Narrow_BathDoorOpen_BdrmDoorClosed_FanOff" in ck
+            and "_Mannequin" not in ck
+        ),
+    ),
+    (
+        "BdrmDoorOpen",
+        "Bedroom Door\nOpen",
+        lambda ck: "_Pepco_Narrow_BathDoorOpen_BdrmDoorOpen_FanOff" in ck,
+    ),
+    (
+        "BdrmDoorAjar",
+        "Bedroom Door\nAjar",
+        lambda ck: "_Pepco_Narrow_BathDoorAjar_BdrmDoorAjar_FanOff" in ck,
+    ),
+]
+BEDROOM_DOOR_TITLE = "Bedroom Door Position Effect"
+BEDROOM_DOOR_XLABEL = "Bedroom Door Position"
+BEDROOM_DOOR_TEMP_FILTER = (36.0, 42.0)
+
 
 def plot_door_comparison_boxplots(
     results_df: pd.DataFrame,
@@ -599,70 +673,52 @@ def plot_door_comparison_boxplots(
         plot_dir: Directory for output files.
         rh_data: Optional RH DataFrame for annotations.
     """
-    # 4a: Bath door
-    bath_door_defs: "List[_GroupDef]" = [
-        (
-            "BathDoorOpen_FanOn",
-            "Bath Door Open\n(Fan On)",
-            lambda ck: "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOn" in ck,
-        ),
-        (
-            "BathDoorClosed_FanOn",
-            "Bath Door Closed\n(Fan On)",
-            lambda ck: "_Pepco_Wide_BathDoorClosed_" in ck and "_FanOn" in ck,
-        ),
-    ]
     _run_comparison_family(
         results_df,
         particle_bins,
         plot_dir,
         stem_prefix="bath_door_position",
-        group_defs=bath_door_defs,
-        title_base="Bath Door Position Effect",
-        x_label="Bath Door Position",
+        group_defs=BATH_DOOR_GROUP_DEFS,
+        title_base=BATH_DOOR_TITLE,
+        x_label=BATH_DOOR_XLABEL,
         rh_data=rh_data,
-        temp_filter=(36.0, 42.0),
+        temp_filter=BATH_DOOR_TEMP_FILTER,
     )
-
-    # 4b: Bedroom door — Pepco Narrow head, W36–42 °C, fan off, no mannequin.
-    # Note: the Ajar group (May 4–7) coincided with the bath door also being Ajar,
-    # so bath door position is not perfectly constant across the three groups.
-    bedroom_door_defs: "List[_GroupDef]" = [
-        (
-            "BdrmDoorClosed",
-            "Bedroom Door\nClosed",
-            lambda ck: (
-                "_Pepco_Narrow_BathDoorOpen_BdrmDoorClosed_FanOff" in ck
-                and "_Mannequin" not in ck
-            ),
-        ),
-        (
-            "BdrmDoorOpen",
-            "Bedroom Door\nOpen",
-            lambda ck: "_Pepco_Narrow_BathDoorOpen_BdrmDoorOpen_FanOff" in ck,
-        ),
-        (
-            "BdrmDoorAjar",
-            "Bedroom Door\nAjar",
-            lambda ck: "_Pepco_Narrow_BathDoorAjar_BdrmDoorAjar_FanOff" in ck,
-        ),
-    ]
     _run_comparison_family(
         results_df,
         particle_bins,
         plot_dir,
         stem_prefix="bedroom_door_position",
-        group_defs=bedroom_door_defs,
-        title_base="Bedroom Door Position Effect",
-        x_label="Bedroom Door Position",
+        group_defs=BEDROOM_DOOR_GROUP_DEFS,
+        title_base=BEDROOM_DOOR_TITLE,
+        x_label=BEDROOM_DOOR_XLABEL,
         rh_data=rh_data,
-        temp_filter=(36.0, 42.0),
+        temp_filter=BEDROOM_DOOR_TEMP_FILTER,
     )
 
 
 # ---------------------------------------------------------------------------
 # 5. Fan Status comparison  (W36–42 °C, Pepco Wide, bath door open, no mannequin)
 # ---------------------------------------------------------------------------
+
+FAN_GROUP_DEFS: "List[_GroupDef]" = [
+    (
+        "FanOff",
+        "Fan Off",
+        lambda ck: (
+            "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck
+        ),
+    ),
+    (
+        "FanOn",
+        "Fan On",
+        lambda ck: "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOn" in ck,
+    ),
+]
+FAN_TITLE = "Bath Fan Effect"
+FAN_XLABEL = "Bath Fan Status"
+FAN_TEMP_FILTER = (36.0, 42.0)
+
 
 def plot_fan_comparison_boxplots(
     results_df: pd.DataFrame,
@@ -682,28 +738,70 @@ def plot_fan_comparison_boxplots(
         plot_dir: Directory for output files.
         rh_data: Optional RH DataFrame for annotations.
     """
-    group_defs: "List[_GroupDef]" = [
-        (
-            "FanOff",
-            "Fan Off",
-            lambda ck: (
-                "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOff" in ck and "_Mannequin" not in ck
-            ),
-        ),
-        (
-            "FanOn",
-            "Fan On",
-            lambda ck: "_Pepco_Wide_BathDoorOpen_" in ck and "_FanOn" in ck,
-        ),
-    ]
     _run_comparison_family(
         results_df,
         particle_bins,
         plot_dir,
         stem_prefix="fan_status",
-        group_defs=group_defs,
-        title_base="Bath Fan Effect",
-        x_label="Bath Fan Status",
+        group_defs=FAN_GROUP_DEFS,
+        title_base=FAN_TITLE,
+        x_label=FAN_XLABEL,
         rh_data=rh_data,
-        temp_filter=(36.0, 42.0),
+        temp_filter=FAN_TEMP_FILTER,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Inhaled-dose comparison panel (generic) — reuses the same group_defs/title/
+# x_label/temp_filter constants as the corresponding emission_etotal family
+# above, but draws only the inhaled_dose metric (quantaq/croom sources; see
+# src/inhalation_dose.py) instead of looping over all three
+# _COMPARISON_METRICS. Callers pass one family's constants per call.
+# ---------------------------------------------------------------------------
+
+
+def plot_condition_dose_comparison_boxplot(
+    results_df: pd.DataFrame,
+    particle_bins: Dict,
+    plot_dir: Path,
+    stem_prefix: str,
+    group_defs: "List[_GroupDef]",
+    title_base: str,
+    x_label: str,
+    rh_data: "Optional[pd.DataFrame]" = None,
+    temp_filter: "Optional[Tuple[float, float]]" = None,
+) -> None:
+    """Inhaled-dose version of one condition-comparison family.
+
+    Produces six figures: 3 bin groups × 2 dose sources (quantaq, croom).
+    Unlike the five named ``plot_*_comparison_boxplots`` functions, this
+    draws only the inhaled_dose metric, not the full emission_etotal /
+    other_process_rate / penetration_factor trio.
+
+    Parameters:
+        results_df: Particle analysis results DataFrame merged with
+            bin{n}_{quantaq,croom}_inhaled_dose columns (see
+            scripts/particle_inhalation_dose_boxplots.py).
+        particle_bins: Dict of bin metadata.
+        plot_dir: Directory for output files.
+        stem_prefix: Output filename stem (e.g. "spray_pattern").
+        group_defs: Same (group_key, tick_label, filter_fn) list used by the
+            corresponding emission_etotal family function.
+        title_base: Figure title prefix (e.g. "Spray Pattern Effect").
+        x_label: x-axis label string.
+        rh_data: Optional Bedroom_Conditions RH DataFrame for annotations.
+        temp_filter: Optional (min_temp, max_temp) in °C.
+    """
+    cfg = _TEMP_BOXPLOT_CONFIG["inhaled_dose"]
+    base_path = plot_dir / f"{stem_prefix}_inhaled_dose_boxplot.png"
+    _draw_categorical_comparison_boxplot(
+        results_df,
+        particle_bins,
+        base_path,
+        cfg,
+        group_defs,
+        title_base=f"{title_base} — {cfg['title_metric']}",
+        x_label=x_label,
+        rh_data=rh_data,
+        temp_filter=temp_filter,
     )

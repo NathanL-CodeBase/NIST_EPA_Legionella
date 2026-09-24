@@ -13,8 +13,12 @@ Functions:
     - plot_deposition_rate_boxplot: beta_raw_mean box-and-whisker by water temperature
     - plot_emission_rate_boxplot: E_mean box-and-whisker by water temperature
     - plot_penetration_factor_boxplot: p_mean box-and-whisker by water temperature
-    - plot_emission_etotal_by_metric_boxplot: E_total vs. continuous metric axis
-    - plot_emission_etotal_by_showerhead_boxplot: E_total grouped by shower head type
+    - plot_inhaled_dose_boxplot: cumulative inhaled dose box-and-whisker by water
+      temperature (quantaq/croom sources; see src/inhalation_dose.py)
+    - plot_emission_etotal_by_metric_boxplot: source-dependent metric (default
+      E_total) vs. continuous metric axis
+    - plot_emission_etotal_by_showerhead_boxplot: source-dependent metric
+      (default E_total) grouped by shower head type
 
 Private helpers (used by plot_comparison.py):
     - _is_base_config: identifies baseline temperature-sweep events
@@ -246,10 +250,12 @@ def _build_temp_stats(
     return temp_stats
 
 
-# Configuration for the four fixed-temperature-axis boxplot functions.
+# Configuration for the five fixed-temperature-axis boxplot functions.
 # Keys: col_template, ylabel, title_metric, title_note, hline (None or float),
-#       has_source (bool — True for metrics computed once per lambda source,
-#       False for source-independent metrics such as penetration factor).
+#       has_source (bool — True for metrics computed once per source),
+#       sources (optional tuple — overrides the default ("outside", "entry")
+#       air-change-rate source pair; e.g. inhaled_dose uses ("quantaq", "croom"),
+#       the two independent concentration series in src/inhalation_dose.py).
 # col_template includes a {source} placeholder for has_source=True entries;
 # format() calls always pass source= (None when has_source=False), which is
 # harmless for templates that don't reference it.
@@ -285,6 +291,15 @@ _TEMP_BOXPLOT_CONFIG = {
         title_note="(Box = median/IQR, whiskers = 1.5×IQR; p capped at 1)",
         hline=1.0,
         has_source=False,
+    ),
+    "inhaled_dose": dict(
+        col_template="bin{n}_{source}_inhaled_dose",
+        ylabel="Cumulative Inhaled Dose (#)",
+        title_metric="Cumulative Inhaled Dose",
+        title_note="(Box = median/IQR, whiskers = 1.5×IQR; 2 h 10 min window from shower-on)",
+        hline=None,
+        has_source=True,
+        sources=("quantaq", "croom"),
     ),
 }
 
@@ -422,10 +437,15 @@ def _draw_temp_axis_boxplot(
         md_groups.append({"header": header, "events": events_list})
     _write_boxplot_companion_md(output_path, cfg["title_metric"], md_groups)
 
-    # Lambda-dependent metrics (has_source=True) are drawn twice, once per
-    # air-change-rate source, bounding the result; source-independent metrics
-    # (e.g. penetration factor) are drawn once with no source suffix.
-    sources = ("outside", "entry") if cfg.get("has_source", True) else (None,)
+    # Source-dependent metrics (has_source=True) are drawn once per entry in
+    # cfg["sources"] (default ("outside", "entry"), the air-change-rate pair;
+    # e.g. inhaled_dose uses ("quantaq", "croom") instead), bounding the
+    # result; source-independent metrics (e.g. penetration factor) are drawn
+    # once with no source suffix.
+    if cfg.get("has_source", True):
+        sources = cfg.get("sources", ("outside", "entry"))
+    else:
+        sources = (None,)
 
     for source in sources:
         source_suffix = f"_{source}" if source else ""
@@ -639,6 +659,37 @@ def plot_penetration_factor_boxplot(
     )
 
 
+def plot_inhaled_dose_boxplot(
+    results_df: pd.DataFrame,
+    particle_bins: Dict,
+    output_path: Path,
+    rh_data: "Optional[pd.DataFrame]" = None,
+    x_range: "Optional[tuple]" = None,
+) -> None:
+    """Three box-and-whisker figures of cumulative inhaled dose by water temperature.
+
+    Drawn once per entry in ``_TEMP_BOXPLOT_CONFIG["inhaled_dose"]["sources"]``
+    (quantaq, croom — the two independent concentration series from
+    src/inhalation_dose.py), matching plot_emission_boxplot's outside/entry pattern.
+
+    Parameters:
+        results_df: DataFrame with analysis results (must contain config_key and
+                    bin{n}_{quantaq,croom}_inhaled_dose).
+        particle_bins: Dictionary of particle bin information.
+        output_path: Base path; ``_bin0-2`` / ``_bin3-6`` / ``_bin7-11`` suffixes are appended.
+        rh_data: Optional DataFrame with 'datetime' and 'RH_bedroom' for RH annotation.
+        x_range: Optional (xmin, xmax, xtick_step) in °C to override the default 5–60 °C axis.
+    """
+    _draw_temp_axis_boxplot(
+        results_df,
+        particle_bins,
+        output_path,
+        _TEMP_BOXPLOT_CONFIG["inhaled_dose"],
+        rh_data,
+        x_range,
+    )
+
+
 def plot_emission_etotal_by_metric_boxplot(
     results_df: pd.DataFrame,
     particle_bins: Dict,
@@ -648,16 +699,24 @@ def plot_emission_etotal_by_metric_boxplot(
     source: str,
     rh_data: "Optional[pd.DataFrame]" = None,
     x_range: "Optional[tuple]" = None,
+    value_col_template: str = "bin{n}_{source}_E_total",
+    value_label: str = "Total Emission E_total (#)",
+    metric_title: str = "Particle Emission",
 ) -> None:
     """
-    Create three box-and-whisker figures of E_total positioned along a continuous metric axis.
+    Create three box-and-whisker figures of a source-dependent metric (default:
+    E_total) positioned along a continuous metric axis.
 
     Produces one figure for each bin group (Bin 0–2, 3–6, 7–11), for one
-    air-change-rate source (outside or entry) — E_total is lambda-dependent,
-    so the caller invokes this once per source with an output_path/metric_col
-    pair matched to that source (e.g. lambda_outside with the outside E_total,
-    lambda_entry with the entry E_total; source-independent x-axis metrics
-    such as bedroom RH reuse the same metric_col for both calls).
+    source (default: outside/entry air-change-rate) — the plotted metric is
+    source-dependent, so the caller invokes this once per source with an
+    output_path/metric_col pair matched to that source (e.g. lambda_outside
+    with the outside E_total, lambda_entry with the entry E_total;
+    source-independent x-axis metrics such as bedroom RH reuse the same
+    metric_col for both calls). *value_col_template*/*value_label*/*metric_title*
+    let the caller substitute a different source-dependent metric (e.g.
+    inhaled dose: "bin{n}_{source}_inhaled_dose" with source in
+    ("quantaq", "croom") — see src/inhalation_dose.py).
     Unlike :func:`plot_emission_boxplot`, the x-axis is not fixed to the
     5–60 °C water-temperature range; instead each water-temperature group (W##) is
     centred at the *group mean* of *metric_col*, and the x-axis auto-scales from data
@@ -668,7 +727,7 @@ def plot_emission_etotal_by_metric_boxplot(
 
     Parameters:
         results_df: DataFrame with analysis results; must contain 'config_key',
-                    bin{n}_{source}_E_total columns, and *metric_col*.
+                    the *value_col_template* columns, and *metric_col*.
         particle_bins: Dictionary of particle bin information.
         output_path: Base path used to derive the three output filenames (suffix
                      ``_bin0-2``, ``_bin3-6``, ``_bin7-11`` plus ``_{source}``
@@ -676,12 +735,18 @@ def plot_emission_etotal_by_metric_boxplot(
         metric_col: Column name in *results_df* used to position each
                     temperature-group box along the x-axis (group mean).
         metric_label: Human-readable x-axis label (e.g. 'Bedroom RH (%)').
-        source: Air-change-rate source whose E_total values are plotted:
-                "outside" or "entry".
+        source: Source whose values are plotted, substituted into
+                *value_col_template* (default: "outside" or "entry").
         rh_data: Optional DataFrame with 'datetime' and 'RH_bedroom' for the
                  n=/RH= annotation (same as other boxplot functions).
         x_range: Optional (xmin, xmax, xtick_step) tuple to fix the x-axis
                  range and tick positions. When None the axis auto-scales.
+        value_col_template: Format template (with {n}, {source}) for the
+                             plotted metric's column name. Default reproduces
+                             the original E_total behavior.
+        value_label: Y-axis label for the plotted metric.
+        metric_title: Metric name used in the figure title and companion .md
+                      (e.g. "Particle Emission", "Cumulative Inhaled Dose").
     """
     apply_style()
 
@@ -736,7 +801,7 @@ def plot_emission_etotal_by_metric_boxplot(
                 )
             )
         md_groups.append({"header": header, "events": events_list})
-    fig_title = f"E_total by {metric_label} ({source} source)"
+    fig_title = f"{metric_title} by {metric_label} ({source} source)"
     md_path = output_path.parent / f"{output_path.stem}_{source}{output_path.suffix}"
     _write_boxplot_companion_md(md_path, fig_title, md_groups)
 
@@ -765,7 +830,7 @@ def plot_emission_etotal_by_metric_boxplot(
         all_bin_widths = np.linspace(width_min, width_max, len(all_bin_nums))
 
         # Build annotation stats keyed by x position (not temperature)
-        value_cols = [f"bin{b}_{source}_E_total" for b in group_bins]
+        value_cols = [value_col_template.format(n=b, source=source) for b in group_bins]
         annot_stats: dict = {}
         for config_key, x_pos in group_x_pos.items():
             group_df = base_df[base_df["config_key"] == config_key]
@@ -791,7 +856,7 @@ def plot_emission_etotal_by_metric_boxplot(
         for bin_num in group_bins:
             global_idx = all_bin_nums.index(bin_num)
             color = SENSOR_COLORS[global_idx % len(SENSOR_COLORS)]
-            col = f"bin{bin_num}_{source}_E_total"
+            col = value_col_template.format(n=bin_num, source=source)
             if col not in base_df.columns:
                 continue
 
@@ -852,9 +917,9 @@ def plot_emission_etotal_by_metric_boxplot(
             )
 
         ax.set_xlabel(metric_label, fontsize=FONT_SIZE_LABEL)
-        ax.set_ylabel("Total Emission E_total (#)", fontsize=FONT_SIZE_LABEL)
+        ax.set_ylabel(value_label, fontsize=FONT_SIZE_LABEL)
         ax.set_title(
-            f"Particle Emission by {metric_label} — "
+            f"{metric_title} by {metric_label} — "
             f"{group_label.replace('-', '–').replace('bin', 'Bin ')} ({source} source)"
             "\n(Box = median/IQR, whiskers = 1.5×IQR; x = group mean of metric)",
             fontsize=FONT_SIZE_TITLE,
@@ -893,13 +958,20 @@ def plot_emission_etotal_by_showerhead_boxplot(
     output_path: Path,
     source: str,
     rh_data: "Optional[pd.DataFrame]" = None,
+    value_col_template: str = "bin{n}_{source}_E_total",
+    value_label: str = "Total Emission E_total (#)",
+    metric_title: str = "Particle Emission",
 ) -> None:
     """
-    Create three box-and-whisker figures of E_total grouped by shower head type.
+    Create three box-and-whisker figures of a source-dependent metric (default:
+    E_total) grouped by shower head type.
 
     Produces one figure for each bin group (Bin 0–2, 3–6, 7–11), for one
-    air-change-rate source (outside or entry) — E_total is lambda-dependent,
-    so the caller invokes this once per source.
+    source — the plotted metric is source-dependent, so the caller invokes
+    this once per source. *value_col_template*/*value_label*/*metric_title*
+    let the caller substitute a different source-dependent metric (e.g.
+    inhaled dose: "bin{n}_{source}_inhaled_dose" with source in
+    ("quantaq", "croom") — see src/inhalation_dose.py).
     Configs are ordered by temperature and grouped into four clusters separated
     by visible gaps on the categorical x-axis:
       - Cluster 1: W37, W38_Pepco_Narrow, W38_Pepco_Wide, W40_Pepco_Narrow,
@@ -914,15 +986,21 @@ def plot_emission_etotal_by_showerhead_boxplot(
 
     Parameters:
         results_df: DataFrame with analysis results; must contain 'config_key'
-                    and bin{n}_{source}_E_total columns.
+                    and the *value_col_template* columns.
         particle_bins: Dictionary of particle bin information.
         output_path: Base path used to derive the three output filenames (suffix
                      ``_bin0-2``, ``_bin3-6``, ``_bin7-11`` plus ``_{source}``
                      are appended to the stem).
-        source: Air-change-rate source whose E_total values are plotted:
-                "outside" or "entry".
+        source: Source whose values are plotted, substituted into
+                *value_col_template* (default: "outside" or "entry").
         rh_data: Optional DataFrame with 'datetime' and 'RH_bedroom' for the
                  n=/RH= annotation (same as other boxplot functions).
+        value_col_template: Format template (with {n}, {source}) for the
+                             plotted metric's column name. Default reproduces
+                             the original E_total behavior.
+        value_label: Y-axis label for the plotted metric.
+        metric_title: Metric name used in the figure title and companion .md
+                      (e.g. "Particle Emission", "Cumulative Inhaled Dose").
     """
     apply_style()
 
@@ -1020,14 +1098,14 @@ def plot_emission_etotal_by_showerhead_boxplot(
         md_groups.append({"header": header, "events": events_list})
     md_path = output_path.parent / f"{output_path.stem}_{source}{output_path.suffix}"
     _write_boxplot_companion_md(
-        md_path, f"E_total by Shower Head Type ({source} source)", md_groups
+        md_path, f"{metric_title} by Shower Head Type ({source} source)", md_groups
     )
 
     for group_bins, group_label in bin_groups:
         if not group_bins:
             continue
 
-        value_cols = [f"bin{b}_{source}_E_total" for b in group_bins]
+        value_cols = [value_col_template.format(n=b, source=source) for b in group_bins]
 
         # Build annotation stats keyed by categorical x position
         annot_stats: dict = {}
@@ -1065,7 +1143,7 @@ def plot_emission_etotal_by_showerhead_boxplot(
         for bin_num in group_bins:
             global_idx = all_bin_nums.index(bin_num)
             color = SENSOR_COLORS[global_idx % len(SENSOR_COLORS)]
-            col = f"bin{bin_num}_{source}_E_total"
+            col = value_col_template.format(n=bin_num, source=source)
             if col not in sh_df.columns:
                 continue
 
@@ -1149,10 +1227,10 @@ def plot_emission_etotal_by_showerhead_boxplot(
         ax.set_xlim(-0.5, max(x_tick_positions) + 0.5)
 
         ax.set_xlabel("Configuration", fontsize=FONT_SIZE_LABEL)
-        ax.set_ylabel("Total Emission E_total (#)", fontsize=FONT_SIZE_LABEL)
+        ax.set_ylabel(value_label, fontsize=FONT_SIZE_LABEL)
         bin_label = group_label.replace("-", "–").replace("bin", "Bin ")
         ax.set_title(
-            f"Particle Emission by Shower Head Type — {bin_label} ({source} source)"
+            f"{metric_title} by Shower Head Type — {bin_label} ({source} source)"
             "\n(Box = median/IQR, whiskers = 1.5×IQR)",
             fontsize=FONT_SIZE_TITLE,
             fontweight=TITLE_FONTWEIGHT,

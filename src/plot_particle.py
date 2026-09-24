@@ -868,9 +868,11 @@ from src.plot_particle_boxplots import (  # noqa: E402
     plot_emission_etotal_by_metric_boxplot,
     plot_emission_etotal_by_showerhead_boxplot,
     plot_emission_rate_boxplot,
+    plot_inhaled_dose_boxplot,
     plot_penetration_factor_boxplot,
 )
 from src.plot_comparison import (  # noqa: E402
+    plot_condition_dose_comparison_boxplot,
     plot_door_comparison_boxplots,
     plot_fan_comparison_boxplots,
     plot_mannequin_comparison_boxplots,
@@ -892,10 +894,12 @@ __all__ = [
     "plot_penetration_factor_boxplot",
     "plot_emission_etotal_by_metric_boxplot",
     "plot_emission_etotal_by_showerhead_boxplot",
+    "plot_inhaled_dose_boxplot",
     # Condition-comparison boxplots (re-exported from plot_comparison)
     "plot_spray_pattern_comparison_boxplots",
     "plot_shower_head_comparison_boxplots",
     "plot_mannequin_comparison_boxplots",
     "plot_door_comparison_boxplots",
+    "plot_condition_dose_comparison_boxplot",
     "plot_fan_comparison_boxplots",
 ]
