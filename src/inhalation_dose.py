@@ -74,7 +74,7 @@ from src.particle_calculations import CM3_PER_M3, PARTICLE_BINS
 # =============================================================================
 
 # Average tidal/minute breath volume used for the dose calculation (m^3).
-BREATH_VOLUME_M3 = 0.006
+BREATH_VOLUME_M3 = 0.005
 
 # Minutes before shower-on averaged to obtain the pre-shower baseline
 # concentration for each bin.
